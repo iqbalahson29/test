@@ -1,0 +1,262 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  STUDENT
+}
+
+enum TenantRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum QuestionType {
+  MCQ_SINGLE
+  MCQ_MULTI
+  TRUE_FALSE
+  SHORT_TEXT
+  NUMERIC
+  ESSAY
+  MATCHING
+  FILL_BLANK
+  FILE_UPLOAD
+}
+
+enum QuizStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  GRADED
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  passwordHash String
+  name         String
+  isSuperAdmin Boolean      @default(false)
+  memberships  Membership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Tenant {
+  id             String           @id @default(cuid())
+  name           String
+  slug           String           @unique
+  memberships    Membership[]
+  groups         Group[]
+  quizzes        Quiz[]
+  assignments    QuizAssignment[]
+  tenantRequests TenantRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A user can hold at most one membership, ever (@@unique([userId])) — a
+// teacher is the sole admin of exactly one tenant, or a student in one.
+model Membership {
+  id       String @id @default(cuid())
+  userId   String
+  tenantId String
+  role     Role
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdQuizzes      Quiz[]           @relation("QuizCreatedBy")
+  groupMemberships    GroupMember[]
+  assignmentsCreated  QuizAssignment[] @relation("AssignmentCreatedBy")
+  assignmentsReceived QuizAssignment[] @relation("AssignmentStudent")
+  attempts            Attempt[]
+  gradedResponses     Response[]       @relation("ResponseGradedBy")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId])
+  @@index([tenantId])
+}
+
+// A public request for a new workspace, reviewed by a platform super admin
+// (User.isSuperAdmin). Approval creates the Tenant + User + Membership.
+model TenantRequest {
+  id             String              @id @default(cuid())
+  workspaceName  String
+  slug           String              @unique
+  requesterName  String
+  requesterEmail String
+  passwordHash   String
+  status         TenantRequestStatus @default(PENDING)
+  tenantId       String?
+  tenant         Tenant?             @relation(fields: [tenantId], references: [id])
+
+  createdAt  DateTime  @default(now())
+  reviewedAt DateTime?
+}
+
+model Group {
+  id       String @id @default(cuid())
+  tenantId String
+  name     String
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members     GroupMember[]
+  assignments QuizAssignment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model GroupMember {
+  id           String @id @default(cuid())
+  groupId      String
+  membershipId String
+
+  group      Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, membershipId])
+}
+
+model Quiz {
+  id                    String     @id @default(cuid())
+  tenantId              String
+  createdByMembershipId String
+  title                 String
+  description           String?
+  timeLimitSec          Int?
+  maxAttempts           Int?
+  shuffleQuestions      Boolean    @default(false)
+  shuffleOptions        Boolean    @default(false)
+  availableFrom         DateTime?
+  availableUntil        DateTime?
+  passMarkPercent       Decimal?   @db.Decimal(5, 2)
+  status                QuizStatus @default(DRAFT)
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   Membership       @relation("QuizCreatedBy", fields: [createdByMembershipId], references: [id])
+  questions   Question[]
+  assignments QuizAssignment[]
+  attempts    Attempt[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// `config` holds type-specific settings (numeric tolerance, matching
+// pairs, blank definitions...) per packages/shared question-config schemas.
+// MCQ_SINGLE / MCQ_MULTI / TRUE_FALSE use QuestionOption instead.
+model Question {
+  id     String       @id @default(cuid())
+  quizId String
+  type   QuestionType
+  prompt String
+  points Decimal      @db.Decimal(6, 2)
+  order  Int
+  config Json         @default("{}")
+
+  quiz      Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  options   QuestionOption[]
+  responses Response[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([quizId])
+}
+
+model QuestionOption {
+  id         String  @id @default(cuid())
+  questionId String
+  text       String
+  isCorrect  Boolean @default(false)
+  order      Int
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// Exactly one of studentMembershipId / groupId is set.
+model QuizAssignment {
+  id                     String    @id @default(cuid())
+  tenantId               String
+  quizId                 String
+  studentMembershipId    String?
+  groupId                String?
+  assignedByMembershipId String
+  dueAt                  DateTime?
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quiz       Quiz        @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student    Membership? @relation("AssignmentStudent", fields: [studentMembershipId], references: [id], onDelete: Cascade)
+  group      Group?      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  assignedBy Membership  @relation("AssignmentCreatedBy", fields: [assignedByMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([quizId])
+}
+
+model Attempt {
+  id                  String        @id @default(cuid())
+  quizId              String
+  studentMembershipId String
+  attemptNumber       Int
+  status              AttemptStatus @default(IN_PROGRESS)
+  startedAt           DateTime      @default(now())
+  submittedAt         DateTime?
+  score               Decimal?      @db.Decimal(7, 2)
+  maxScore            Decimal?      @db.Decimal(7, 2)
+
+  quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student   Membership @relation(fields: [studentMembershipId], references: [id], onDelete: Cascade)
+  responses Response[]
+
+  @@unique([quizId, studentMembershipId, attemptNumber])
+  @@index([quizId])
+  @@index([studentMembershipId])
+}
+
+model Response {
+  id                    String   @id @default(cuid())
+  attemptId             String
+  questionId            String
+  answer                Json?
+  fileKey               String?
+  awardedPoints         Decimal? @db.Decimal(6, 2)
+  autoGraded            Boolean  @default(false)
+  gradedByMembershipId  String?
+  feedback              String?
+
+  attempt  Attempt     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  gradedBy Membership? @relation("ResponseGradedBy", fields: [gradedByMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+}

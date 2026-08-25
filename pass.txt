@@ -1,0 +1,6 @@
+superadmin@quiz-platform.test / password123
+
+student@acme.test / password123
+shoeb@gmail.com / Shoeb@1234
+
+admin@acme.test / password123

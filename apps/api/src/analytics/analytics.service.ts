@@ -1,0 +1,152 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { AttemptStatus } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function average(arr: number[]): number | null {
+  return arr.length ? arr.reduce((sum, x) => sum + x, 0) / arr.length : null;
+}
+
+function median(arr: number[]): number | null {
+  if (arr.length === 0) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+@Injectable()
+export class AnalyticsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async quizAnalytics(tenantId: string, quizId: string) {
+    const quiz = await this.prisma.quiz.findUnique({
+      where: { id: quizId },
+      include: { questions: { orderBy: { order: 'asc' } } },
+    });
+    if (!quiz || quiz.tenantId !== tenantId) {
+      throw new NotFoundException('Quiz not found');
+    }
+
+    const totalAttempts = await this.prisma.attempt.count({ where: { quizId } });
+    const gradedAttempts = await this.prisma.attempt.findMany({
+      where: { quizId, status: AttemptStatus.GRADED },
+    });
+
+    const scores = gradedAttempts.map((a) => Number(a.score));
+    const percents = gradedAttempts.map(
+      (a) => (Number(a.score) / Number(a.maxScore)) * 100,
+    );
+
+    const scoreDistribution = Array.from({ length: 10 }, (_, i) => ({
+      bucket: `${i * 10}-${i * 10 + 10}%`,
+      count: 0,
+    }));
+    for (const p of percents) {
+      const idx = Math.min(9, Math.floor(p / 10));
+      scoreDistribution[idx].count++;
+    }
+
+    const passMarkPercent = quiz.passMarkPercent;
+    const passRate =
+      passMarkPercent != null && percents.length > 0
+        ? round2(
+            (percents.filter((p) => p >= Number(passMarkPercent)).length /
+              percents.length) *
+              100,
+          )
+        : null;
+
+    const responses = await this.prisma.response.findMany({
+      where: { question: { quizId }, attempt: { status: AttemptStatus.GRADED } },
+    });
+    const byQuestion = new Map(
+      quiz.questions.map((q) => [
+        q.id,
+        { points: Number(q.points), totalAwarded: 0, fullCredit: 0, count: 0 },
+      ]),
+    );
+    for (const r of responses) {
+      const entry = byQuestion.get(r.questionId);
+      if (!entry) continue;
+      const awarded = Number(r.awardedPoints ?? 0);
+      entry.totalAwarded += awarded;
+      entry.count++;
+      if (entry.points > 0 && awarded >= entry.points) entry.fullCredit++;
+    }
+
+    const perQuestion = quiz.questions.map((q) => {
+      const entry = byQuestion.get(q.id)!;
+      return {
+        questionId: q.id,
+        prompt: q.prompt,
+        type: q.type,
+        points: q.points,
+        percentCorrect:
+          entry.count > 0 ? round2((entry.fullCredit / entry.count) * 100) : null,
+        averagePercent:
+          entry.count > 0 && entry.points > 0
+            ? round2((entry.totalAwarded / entry.count / entry.points) * 100)
+            : null,
+      };
+    });
+
+    const avgScore = average(scores);
+    const medScore = median(scores);
+    const avgPercent = average(percents);
+    const medPercent = median(percents);
+
+    return {
+      quizTitle: quiz.title,
+      totalAttempts,
+      gradedAttempts: gradedAttempts.length,
+      averageScore: avgScore !== null ? round2(avgScore) : null,
+      medianScore: medScore !== null ? round2(medScore) : null,
+      averagePercent: avgPercent !== null ? round2(avgPercent) : null,
+      medianPercent: medPercent !== null ? round2(medPercent) : null,
+      maxScore: quiz.questions.reduce((sum, q) => sum + Number(q.points), 0),
+      passMarkPercent,
+      passRate,
+      scoreDistribution,
+      perQuestion,
+    };
+  }
+
+  async myAnalytics(tenantId: string, studentMembershipId: string) {
+    const attempts = await this.prisma.attempt.findMany({
+      where: { studentMembershipId, quiz: { tenantId } },
+      include: { quiz: { select: { title: true } } },
+      orderBy: { submittedAt: 'asc' },
+    });
+
+    const gradedAttempts = attempts.filter((a) => a.status === AttemptStatus.GRADED);
+    const percents = gradedAttempts.map(
+      (a) => (Number(a.score) / Number(a.maxScore)) * 100,
+    );
+    const avgPercent = average(percents);
+
+    return {
+      averagePercent: avgPercent !== null ? round2(avgPercent) : null,
+      attempts: attempts.map((a) => ({
+        attemptId: a.id,
+        quizTitle: a.quiz.title,
+        attemptNumber: a.attemptNumber,
+        status: a.status,
+        score: a.score,
+        maxScore: a.maxScore,
+        percent:
+          a.status === AttemptStatus.GRADED
+            ? round2((Number(a.score) / Number(a.maxScore)) * 100)
+            : null,
+        submittedAt: a.submittedAt,
+      })),
+      trend: gradedAttempts.map((a) => ({
+        submittedAt: a.submittedAt,
+        quizTitle: a.quiz.title,
+        percent: round2((Number(a.score) / Number(a.maxScore)) * 100),
+      })),
+    };
+  }
+}
