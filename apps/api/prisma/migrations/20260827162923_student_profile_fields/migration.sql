@@ -1,0 +1,15 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "avatarUrl" TEXT,
+ADD COLUMN     "bio" TEXT,
+ADD COLUMN     "dateOfBirth" DATE,
+ADD COLUMN     "emailNotifications" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "firstName" TEXT,
+ADD COLUMN     "gradeLevel" TEXT,
+ADD COLUMN     "guardianContact" TEXT,
+ADD COLUMN     "guardianName" TEXT,
+ADD COLUMN     "lastName" TEXT,
+ADD COLUMN     "locale" TEXT,
+ADD COLUMN     "location" TEXT,
+ADD COLUMN     "phone" TEXT,
+ADD COLUMN     "studentId" TEXT,
+ADD COLUMN     "timezone" TEXT;

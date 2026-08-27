@@ -1,0 +1,14 @@
+{
+  "name": "quiz-platform",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "pnpm --filter @quiz-platform/api start:dev",
+    "dev:web": "pnpm --filter @quiz-platform/web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint"
+  }
+}
