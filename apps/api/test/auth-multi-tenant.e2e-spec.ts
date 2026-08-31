@@ -17,20 +17,21 @@ async function login(app: INestApplication<App>, email: string, password = 'pass
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
   const superadmin = await login(app, 'superadmin@quiz-platform.test');
   const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
+  const password = 'Password123';
   const reqRes = await request(app.getHttpServer())
     .post('/tenant-requests')
     .send({
       workspaceName: `Multi ${label} ${Date.now()}`,
       requesterName: 'Workspace Admin',
       requesterEmail: email,
-      password: 'password123',
+      password,
     })
     .expect(201);
   await request(app.getHttpServer())
     .post(`/tenant-requests/${reqRes.body.id}/approve`)
     .set('Authorization', `Bearer ${superadmin.body.accessToken}`)
     .expect(201);
-  const adminLogin = await login(app, email);
+  const adminLogin = await login(app, email, password);
   return { token: adminLogin.body.accessToken as string, email };
 }
 
@@ -77,22 +78,23 @@ describe('Auth: self-registration, assign-by-email, multi-tenant (e2e)', () => {
 
   it('registers a memberless student, who cannot log in until assigned', async () => {
     const email = `newstudent-${Date.now()}@e2e.test`;
+    const password = 'Password123';
 
     await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ email, name: 'New Student', password: 'password123' })
+      .send({ email, name: 'New Student', password })
       .expect(201);
 
     // Duplicate registration is rejected.
     await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ email, name: 'New Student', password: 'password123' })
+      .send({ email, name: 'New Student', password })
       .expect(409);
 
     // Zero memberships -> login succeeds with a no-workspace session
     // (see workspace-join-requests.e2e-spec.ts for the full flow this
     // status enables), not a 403.
-    const loginRes = await login(app, email);
+    const loginRes = await login(app, email, password);
     expect(loginRes.status).toBe(200);
     expect(loginRes.body.status).toBe('no-workspace');
     expect(loginRes.body.accessToken).toBeDefined();
@@ -117,7 +119,7 @@ describe('Auth: self-registration, assign-by-email, multi-tenant (e2e)', () => {
       .expect(201);
 
     // Now they have exactly one membership -> normal single-workspace login.
-    const secondLogin = await login(app, email);
+    const secondLogin = await login(app, email, password);
     expect(secondLogin.status).toBe(200);
     expect(secondLogin.body.status).toBe('ok');
     expect(secondLogin.body.membership.role).toBe('STUDENT');
@@ -132,9 +134,10 @@ describe('Auth: self-registration, assign-by-email, multi-tenant (e2e)', () => {
 
   it('supports a student joining a second tenant, with choose-workspace + switch-workspace', async () => {
     const email = `multitenant-${Date.now()}@e2e.test`;
+    const password = 'Password123';
     await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ email, name: 'Multi Tenant Student', password: 'password123' })
+      .send({ email, name: 'Multi Tenant Student', password })
       .expect(201);
 
     const acmeAdmin = await login(app, 'admin@acme.test');
@@ -154,7 +157,7 @@ describe('Auth: self-registration, assign-by-email, multi-tenant (e2e)', () => {
       .expect(201);
 
     // Two memberships now -> login returns choose-workspace, not tokens.
-    const loginRes = await login(app, email);
+    const loginRes = await login(app, email, password);
     expect(loginRes.status).toBe(200);
     expect(loginRes.body.status).toBe('choose-workspace');
     expect(loginRes.body.accessToken).toBeUndefined();

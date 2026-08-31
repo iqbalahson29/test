@@ -21,6 +21,8 @@ export type RefreshApiResponse = Extract<
   { status: 'ok' | 'superadmin' | 'no-workspace' }
 >
 export type SelectWorkspaceApiResponse = Extract<LoginApiResponse, { status: 'ok' }>
+export type EnterWorkspaceApiResponse = Extract<LoginApiResponse, { status: 'ok' }>
+export type ExitWorkspaceApiResponse = Extract<LoginApiResponse, { status: 'superadmin' }>
 
 export function homePathForRole(role: Role): string {
   switch (role) {

@@ -3,19 +3,19 @@ import type { ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
+  ArrowLeftRight,
   BarChart3,
   Bell,
-  Check,
+  Building2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Globe,
+  Inbox,
   LayoutDashboard,
-  LayoutGrid,
   LogOut,
   Repeat2,
-  Search,
-  Sparkles,
   UserCircle,
   UserPlus,
   Users,
@@ -24,6 +24,11 @@ import { authApi } from './api'
 import { useAuth } from './auth-context'
 import { homePathForRole } from './types'
 import type { Membership } from './types'
+import { GlobalSearch } from '@/features/search/global-search'
+import { NotificationRow } from '@/features/notifications/notification-row'
+import { NotificationsDialog } from '@/features/notifications/notifications-dialog'
+import { useMarkNotificationRead, useRecentNotifications, useUnreadCount } from '@/features/notifications/use-notifications'
+import type { NotificationItem, NotificationsPage } from '@/features/notifications/types'
 import {
   Sidebar,
   SidebarContent,
@@ -37,10 +42,10 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarRail,
+  SidebarTrigger,
 } from '@/components/ui/sidebar'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +61,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 interface NavItem {
   label: string
@@ -75,6 +81,7 @@ function getNavItems(role: 'ADMIN' | 'STUDENT'): NavItem[] {
         match: (p) => p.startsWith('/teacher'),
       },
       { label: 'Members', href: '/admin/members', icon: Users },
+      { label: 'Workspace settings', href: '/admin/workspace-settings', icon: Globe },
     ]
   }
   return [
@@ -89,44 +96,10 @@ function getNavItems(role: 'ADMIN' | 'STUDENT'): NavItem[] {
   ]
 }
 
-interface NotificationItem {
-  id: string
-  icon: typeof Bell
-  badgeClass: string
-  title: string
-  body: string
-  time: string
-  unread: boolean
-}
-
-const NOTIFICATIONS: NotificationItem[] = [
-  {
-    id: '1',
-    icon: ClipboardList,
-    badgeClass: 'bg-primary-50 text-primary-600',
-    title: 'New quiz assigned',
-    body: 'You have a new quiz waiting to be started.',
-    time: '5m ago',
-    unread: true,
-  },
-  {
-    id: '2',
-    icon: Check,
-    badgeClass: 'bg-emerald-50 text-emerald-600',
-    title: 'Join request approved',
-    body: 'Your request to join a workspace was approved.',
-    time: '2h ago',
-    unread: true,
-  },
-  {
-    id: '3',
-    icon: Users,
-    badgeClass: 'bg-gray-100 text-gray-600',
-    title: 'New member joined',
-    body: 'A new member joined your workspace.',
-    time: '1d ago',
-    unread: false,
-  },
+const superAdminNavItems: NavItem[] = [
+  { label: 'Workspace requests', href: '/superadmin', icon: Inbox },
+  { label: 'Workspaces', href: '/superadmin/workspaces', icon: Building2 },
+  { label: 'Users', href: '/superadmin/users', icon: Users },
 ]
 
 function initials(name: string) {
@@ -139,23 +112,218 @@ function initials(name: string) {
     .toUpperCase()
 }
 
+function NotificationsBell({
+  open,
+  onOpenChange,
+  unreadCount,
+  recentNotifications,
+  onSelectNotification,
+  onViewAll,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  unreadCount: number
+  recentNotifications: NotificationsPage | undefined
+  onSelectNotification: (n: NotificationItem) => void
+  onViewAll: () => void
+}) {
+  return (
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="Notifications"
+          aria-label="Notifications"
+          className="relative rounded-md p-2 text-gray-500 hover:bg-gray-200"
+        >
+          <Bell size={17} />
+          {unreadCount > 0 && (
+            <span className="absolute top-0.5 right-0.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-0.5 text-[8px] font-bold text-white ring-2 ring-white">
+              {unreadCount}
+            </span>
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={8}
+        className="w-80 rounded-2xl border border-gray-200 p-0 ring-0 shadow-2xl"
+      >
+        <div className="border-b border-gray-100 px-5 pt-4 pb-3">
+          <h3 className="text-[15px] font-bold text-gray-900">Notifications</h3>
+        </div>
+        <div>
+          {!recentNotifications || recentNotifications.items.length === 0 ? (
+            <p className="px-5 py-8 text-center text-[12.5px] text-gray-400">
+              No notifications yet.
+            </p>
+          ) : (
+            recentNotifications.items.map((n) => (
+              <NotificationRow key={n.id} notification={n} onSelect={onSelectNotification} />
+            ))
+          )}
+        </div>
+        <div className="border-t border-gray-100 px-5 py-3">
+          <button
+            type="button"
+            onClick={onViewAll}
+            className="text-[12.5px] font-semibold text-primary-600"
+          >
+            View all notifications
+          </button>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function AccountMenu({
+  displayName,
+  subtitle,
+  avatarUrl,
+  otherMemberships,
+  impersonating,
+  exiting,
+  onSwitchWorkspace,
+  onExitToSuperAdmin,
+  onLogout,
+}: {
+  displayName: string
+  subtitle: string
+  avatarUrl: string | null | undefined
+  otherMemberships: Membership[]
+  impersonating: boolean
+  exiting: boolean
+  onSwitchWorkspace: () => void
+  onExitToSuperAdmin: () => void
+  onLogout: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Account menu"
+          className="flex items-center gap-1 rounded-md p-1 hover:bg-gray-100"
+        >
+          <Avatar className="size-6 rounded-md">
+            <AvatarImage src={avatarUrl ?? undefined} alt="" className="rounded-md" />
+            <AvatarFallback className="rounded-md bg-primary-600 text-[10px] font-bold text-white">
+              {initials(displayName)}
+            </AvatarFallback>
+          </Avatar>
+          <ChevronDown size={11} className="text-gray-400" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={8}
+        className="w-60 rounded-xl border border-gray-200 p-0 ring-0 shadow-xl"
+      >
+        <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
+          <Avatar className="size-9 rounded-md">
+            <AvatarImage src={avatarUrl ?? undefined} alt="" className="rounded-md" />
+            <AvatarFallback className="rounded-md bg-primary-600 text-xs font-bold text-white">
+              {initials(displayName)}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0">
+            <p className="truncate text-[12px] font-semibold text-gray-800">{displayName}</p>
+            <p className="truncate text-[11px] text-gray-400">{subtitle}</p>
+          </div>
+        </div>
+        <div className="py-1">
+          <DropdownMenuItem
+            asChild
+            className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px] text-gray-700 focus:bg-gray-50 focus:text-gray-700"
+          >
+            <Link to="/profile">
+              <UserCircle size={16} />
+              Profile
+            </Link>
+          </DropdownMenuItem>
+          {otherMemberships.length > 0 && (
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault()
+                onSwitchWorkspace()
+              }}
+              className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px] text-gray-700 focus:bg-gray-50 focus:text-gray-700"
+            >
+              <Repeat2 size={16} />
+              Switch workspace
+            </DropdownMenuItem>
+          )}
+          {impersonating && (
+            <DropdownMenuItem
+              onClick={onExitToSuperAdmin}
+              disabled={exiting}
+              className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px] text-gray-700 focus:bg-gray-50 focus:text-gray-700"
+            >
+              <ArrowLeftRight size={16} />
+              Back to Super Admin
+            </DropdownMenuItem>
+          )}
+        </div>
+        <div className="border-t border-gray-100 py-1">
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault()
+              onLogout()
+            }}
+            variant="destructive"
+            className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px]"
+          >
+            <LogOut size={16} />
+            Log out
+          </DropdownMenuItem>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
-  const { membership, logout, switchWorkspace } = useAuth()
+  const { status, membership, logout, switchWorkspace, exitToSuperAdmin } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [switchOpen, setSwitchOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [exiting, setExiting] = useState(false)
+  const [logoutOpen, setLogoutOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [notifMenuOpenDesktop, setNotifMenuOpenDesktop] = useState(false)
+  const [notifMenuOpenMobile, setNotifMenuOpenMobile] = useState(false)
+  const [notifDialogOpen, setNotifDialogOpen] = useState(false)
+
+  const hasWorkspace = !!membership
+  const isSuperAdminHome = status === 'superadmin'
 
   const { data: allMemberships } = useQuery({
     queryKey: ['my-memberships'],
     queryFn: authApi.myMemberships,
+    enabled: hasWorkspace,
   })
+  const { data: profile } = useQuery({
+    queryKey: ['profile'],
+    queryFn: authApi.profile,
+  })
+  const notificationsEnabled = hasWorkspace || isSuperAdminHome
+  const { data: unreadData } = useUnreadCount(notificationsEnabled)
+  const { data: recentNotifications } = useRecentNotifications(6, notificationsEnabled)
+  const markNotificationRead = useMarkNotificationRead()
   const otherMemberships =
     allMemberships?.filter((m) => m.membershipId !== membership?.membershipId) ?? []
 
   const onLogout = async () => {
-    await logout()
-    navigate('/login', { replace: true })
+    setLoggingOut(true)
+    try {
+      await logout()
+      navigate('/login', { replace: true })
+    } finally {
+      setLoggingOut(false)
+      setLogoutOpen(false)
+    }
   }
 
   const onSwitch = async (target: Membership) => {
@@ -169,19 +337,52 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
+  // A super admin who has entered a workspace looks exactly like that
+  // workspace's own admin (same token/membership) — `profile.isSuperAdmin`
+  // is what distinguishes "really this tenant's admin" from "platform
+  // super admin currently acting as one", so the banner and exit link only
+  // show up for the latter.
+  const impersonating = !!profile?.isSuperAdmin && hasWorkspace
+
+  const onExitToSuperAdmin = async () => {
+    setExiting(true)
+    try {
+      await exitToSuperAdmin()
+      navigate('/superadmin', { replace: true })
+    } finally {
+      setExiting(false)
+    }
+  }
+
   const role = membership?.role ?? 'STUDENT'
-  const navItems = getNavItems(role)
+  const navItems = hasWorkspace ? getNavItems(role) : isSuperAdminHome ? superAdminNavItems : []
   const tenantName = membership?.tenantName ?? ''
-  const unreadCount = NOTIFICATIONS.filter((n) => n.unread).length
+  const displayName = hasWorkspace
+    ? tenantName
+    : isSuperAdminHome
+      ? 'Super Admin'
+      : (profile?.name ?? 'Account')
+  const roleLabel = hasWorkspace ? role : isSuperAdminHome ? 'Super Admin' : 'No workspace'
+  const homeHref = hasWorkspace
+    ? homePathForRole(role)
+    : isSuperAdminHome
+      ? '/superadmin'
+      : '/no-workspace'
+  const unreadCount = unreadData?.count ?? 0
+
+  const onSelectNotification = (n: NotificationItem) => {
+    setNotifMenuOpenDesktop(false)
+    setNotifMenuOpenMobile(false)
+    if (!n.read) markNotificationRead.mutate(n.id)
+    if (n.link) navigate(n.link)
+  }
 
   return (
     <SidebarProvider>
-      <header className="fixed top-0 right-0 left-0 z-30 flex h-10 items-center border-b border-gray-200 bg-gray-100 px-4">
-        <Link to={homePathForRole(role)} className="flex h-full shrink-0 items-center gap-2 px-1">
-          <div className="flex h-full w-7 items-center justify-center rounded-md bg-primary-600 text-white">
-            <Sparkles size={14} />
-          </div>
-          <span className="text-[15px] font-bold tracking-tight text-gray-900">Quiz Platform</span>
+      <header className="fixed top-0 right-0 left-0 z-30 hidden h-10 items-center border-b border-gray-200 bg-gray-100 px-4 md:flex">
+        <Link to={homeHref} className="flex h-full shrink-0 items-center gap-2 px-1">
+          <img src="/brand.png" alt="Test Platform" className="h-7 w-7 object-contain" />
+          <span className="text-[15px] font-bold tracking-tight text-gray-900">Test Platform</span>
         </Link>
 
         <div className="pointer-events-none absolute inset-0 hidden items-center justify-center md:flex">
@@ -202,175 +403,139 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <ChevronRight size={15} />
             </button>
-            <div className="flex w-full items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] text-gray-500 shadow-sm md:w-[480px] lg:w-[660px]">
-              <Search size={13} className="shrink-0" />
-              <span className="flex-1 truncate text-left">Search here...</span>
-              <kbd className="shrink-0 rounded bg-gray-100 px-1 font-mono text-[10px]">&#8984;K</kbd>
-            </div>
+            <GlobalSearch />
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-0.5">
-          <button
-            type="button"
-            title="Apps"
-            aria-label="Apps"
-            className="rounded-md p-2 text-gray-500 hover:bg-gray-200"
-          >
-            <LayoutGrid size={17} />
-          </button>
+        <div className="ml-auto flex items-center gap-3">
+          {notificationsEnabled && (
+            <NotificationsBell
+              open={notifMenuOpenDesktop}
+              onOpenChange={setNotifMenuOpenDesktop}
+              unreadCount={unreadCount}
+              recentNotifications={recentNotifications}
+              onSelectNotification={onSelectNotification}
+              onViewAll={() => {
+                setNotifMenuOpenDesktop(false)
+                setNotifDialogOpen(true)
+              }}
+            />
+          )}
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                title="Notifications"
-                aria-label="Notifications"
-                className="relative rounded-md p-2 text-gray-500 hover:bg-gray-200"
-              >
-                <Bell size={17} />
-                {unreadCount > 0 && (
-                  <span className="absolute top-0.5 right-0.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-0.5 text-[8px] font-bold text-white ring-2 ring-white">
-                    {unreadCount}
-                  </span>
-                )}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              sideOffset={8}
-              className="w-80 rounded-2xl border border-gray-200 p-0 ring-0 shadow-2xl"
-            >
-              <div className="border-b border-gray-100 px-5 pt-4 pb-3">
-                <h3 className="text-[15px] font-bold text-gray-900">Notifications</h3>
-              </div>
-              <div>
-                {NOTIFICATIONS.map((n) => (
-                  <div
-                    key={n.id}
-                    className={cn(
-                      'flex items-start gap-3 px-5 py-3.5',
-                      n.unread && 'bg-primary-50/40',
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'flex size-9 shrink-0 items-center justify-center rounded-full',
-                        n.badgeClass,
-                      )}
-                    >
-                      <n.icon size={16} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[13px] font-semibold text-gray-800">{n.title}</p>
-                      <p className="text-[12px] text-gray-500">{n.body}</p>
-                      <p className="mt-0.5 text-[11px] text-gray-400">{n.time}</p>
-                    </div>
-                    {n.unread && (
-                      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary-600" />
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="border-t border-gray-100 px-5 py-3">
-                <button type="button" className="text-[12.5px] font-semibold text-primary-600">
-                  View all notifications
-                </button>
-              </div>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Account menu"
-                className="flex items-center gap-1 rounded-md py-1 pr-1.5 pl-1 hover:bg-gray-100"
-              >
-                <Avatar className="size-7 rounded-md">
-                  <AvatarFallback className="rounded-md bg-primary-600 text-[10px] font-bold text-white">
-                    {initials(tenantName || role)}
-                  </AvatarFallback>
-                </Avatar>
-                <ChevronDown size={11} className="text-gray-400" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              sideOffset={8}
-              className="w-60 rounded-xl border border-gray-200 p-0 ring-0 shadow-xl"
-            >
-              <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-                <Avatar className="size-9 rounded-md">
-                  <AvatarFallback className="rounded-md bg-primary-600 text-xs font-bold text-white">
-                    {initials(tenantName || role)}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <p className="truncate text-[12px] font-semibold text-gray-800">{tenantName}</p>
-                  <p className="truncate text-[11px] text-gray-400">@{role.toLowerCase()}</p>
-                </div>
-              </div>
-              <div className="py-1">
-                <DropdownMenuItem
-                  asChild
-                  className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px] text-gray-700 focus:bg-gray-50 focus:text-gray-700"
-                >
-                  <Link to="/profile">
-                    <UserCircle size={16} />
-                    Profile
-                  </Link>
-                </DropdownMenuItem>
-                {otherMemberships.length > 0 && (
-                  <DropdownMenuItem
-                    onSelect={(e) => {
-                      e.preventDefault()
-                      setSwitchOpen(true)
-                    }}
-                    className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px] text-gray-700 focus:bg-gray-50 focus:text-gray-700"
-                  >
-                    <Repeat2 size={16} />
-                    Switch workspace
-                  </DropdownMenuItem>
-                )}
-              </div>
-              <div className="border-t border-gray-100 py-1">
-                <DropdownMenuItem
-                  onClick={onLogout}
-                  variant="destructive"
-                  className="flex items-center gap-2.5 rounded-none px-4 py-2.5 text-[13px]"
-                >
-                  <LogOut size={16} />
-                  Log out
-                </DropdownMenuItem>
-              </div>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <AccountMenu
+            displayName={displayName}
+            subtitle={hasWorkspace ? `@${role.toLowerCase()}` : (profile?.email ?? '')}
+            avatarUrl={profile?.avatarUrl}
+            otherMemberships={otherMemberships}
+            impersonating={impersonating}
+            exiting={exiting}
+            onSwitchWorkspace={() => setSwitchOpen(true)}
+            onExitToSuperAdmin={onExitToSuperAdmin}
+            onLogout={() => setLogoutOpen(true)}
+          />
         </div>
       </header>
 
-      <Sidebar collapsible="icon" className="pt-10">
+      {impersonating && (
+        <div className="fixed top-0 right-0 left-0 z-20 flex h-8 items-center justify-center gap-2 border-b border-amber-200 bg-amber-50 px-4 text-[12px] font-medium text-amber-800 md:top-10">
+          <span>
+            Acting as Admin of <strong>{tenantName}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={onExitToSuperAdmin}
+            disabled={exiting}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          >
+            <ArrowLeftRight size={12} />
+            Back to Super Admin
+          </button>
+        </div>
+      )}
+
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 flex items-center gap-1 border-t border-gray-200 bg-gray-100 px-2 pt-1.5 md:hidden"
+        style={{ paddingBottom: 'calc(0.375rem + env(safe-area-inset-bottom))' }}
+      >
+        <SidebarTrigger />
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="rounded-md p-2 text-gray-500 hover:bg-gray-200"
+          aria-label="Back"
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate(1)}
+          className="rounded-md p-2 text-gray-500 hover:bg-gray-200"
+          aria-label="Forward"
+        >
+          <ChevronRight size={18} />
+        </button>
+        <div className="min-w-0 flex-1">
+          <GlobalSearch dropdownPosition="top" />
+        </div>
+        {notificationsEnabled && (
+          <NotificationsBell
+            open={notifMenuOpenMobile}
+            onOpenChange={setNotifMenuOpenMobile}
+            unreadCount={unreadCount}
+            recentNotifications={recentNotifications}
+            onSelectNotification={onSelectNotification}
+            onViewAll={() => {
+              setNotifMenuOpenMobile(false)
+              setNotifDialogOpen(true)
+            }}
+          />
+        )}
+        <AccountMenu
+          displayName={displayName}
+          subtitle={hasWorkspace ? `@${role.toLowerCase()}` : (profile?.email ?? '')}
+          avatarUrl={profile?.avatarUrl}
+          otherMemberships={otherMemberships}
+          impersonating={impersonating}
+          exiting={exiting}
+          onSwitchWorkspace={() => setSwitchOpen(true)}
+          onExitToSuperAdmin={onExitToSuperAdmin}
+          onLogout={() => setLogoutOpen(true)}
+        />
+      </div>
+
+      <Sidebar
+        collapsible="icon"
+        className={impersonating ? 'pt-8 md:pt-[72px]' : 'pt-0 md:pt-10'}
+      >
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+            <SidebarGroupLabel>
+              {hasWorkspace ? 'Workspace' : isSuperAdminHome ? 'Super Admin' : 'Workspace'}
+            </SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu>
-                {navItems.map((item) => {
-                  const isActive = item.match
-                    ? item.match(location.pathname)
-                    : location.pathname === item.href
-                  return (
-                    <SidebarMenuItem key={item.href}>
-                      <SidebarMenuButton asChild isActive={isActive} tooltip={item.label}>
-                        <Link to={item.href}>
-                          <item.icon />
-                          <span>{item.label}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  )
-                })}
-              </SidebarMenu>
+              {navItems.length > 0 ? (
+                <SidebarMenu>
+                  {navItems.map((item) => {
+                    const isActive = item.match
+                      ? item.match(location.pathname)
+                      : location.pathname === item.href
+                    return (
+                      <SidebarMenuItem key={item.href}>
+                        <SidebarMenuButton asChild isActive={isActive} tooltip={item.label}>
+                          <Link to={item.href}>
+                            <item.icon />
+                            <span>{item.label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })}
+                </SidebarMenu>
+              ) : (
+                <p className="px-2 text-xs text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden">
+                  You&apos;re not part of a workspace yet.
+                </p>
+              )}
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -381,14 +546,15 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <DropdownMenuTrigger asChild>
                   <SidebarMenuButton size="lg">
                     <Avatar className="size-6 rounded-md">
+                      <AvatarImage src={profile?.avatarUrl ?? undefined} alt="" className="rounded-md" />
                       <AvatarFallback className="rounded-md bg-primary/10 text-xs text-primary">
-                        {initials(tenantName || role)}
+                        {initials(displayName)}
                       </AvatarFallback>
                     </Avatar>
                     <div className="grid flex-1 text-left text-sm leading-tight">
-                      <span className="truncate font-medium">{tenantName}</span>
+                      <span className="truncate font-medium">{displayName}</span>
                       <span className="truncate text-xs text-sidebar-foreground/70">
-                        {role}
+                        {roleLabel}
                       </span>
                     </div>
                   </SidebarMenuButton>
@@ -396,9 +562,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <DropdownMenuContent side="top" align="start" className="w-56">
                   <DropdownMenuLabel className="font-normal">
                     <div className="flex flex-col gap-0.5">
-                      <span className="text-sm font-medium">{tenantName}</span>
+                      <span className="text-sm font-medium">{displayName}</span>
                       <Badge variant="secondary" className="w-fit text-xs">
-                        {role}
+                        {roleLabel}
                       </Badge>
                     </div>
                   </DropdownMenuLabel>
@@ -420,7 +586,19 @@ export function AppShell({ children }: { children: ReactNode }) {
                       Switch workspace
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={onLogout} variant="destructive">
+                  {impersonating && (
+                    <DropdownMenuItem onClick={onExitToSuperAdmin} disabled={exiting}>
+                      <ArrowLeftRight />
+                      Back to Super Admin
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      setLogoutOpen(true)
+                    }}
+                    variant="destructive"
+                  >
                     <LogOut />
                     Log out
                   </DropdownMenuItem>
@@ -431,8 +609,10 @@ export function AppShell({ children }: { children: ReactNode }) {
         </SidebarFooter>
         <SidebarRail />
       </Sidebar>
-      <SidebarInset className="pt-10">
-        <main className="flex-1 p-6">{children}</main>
+      <SidebarInset
+        className={impersonating ? 'pt-8 md:pt-[72px]' : 'pt-0 md:pt-10'}
+      >
+        <main className="flex-1 px-6 pt-6 pb-24 md:pb-6">{children}</main>
       </SidebarInset>
 
       <Dialog open={switchOpen} onOpenChange={setSwitchOpen}>
@@ -460,6 +640,21 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {notificationsEnabled && (
+        <NotificationsDialog open={notifDialogOpen} onOpenChange={setNotifDialogOpen} />
+      )}
+
+      <ConfirmDialog
+        open={logoutOpen}
+        onOpenChange={setLogoutOpen}
+        title="Log out"
+        description="Are you sure you want to log out?"
+        confirmLabel="Log out"
+        destructive
+        loading={loggingOut}
+        onConfirm={onLogout}
+      />
     </SidebarProvider>
   )
 }

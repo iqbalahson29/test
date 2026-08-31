@@ -17,6 +17,8 @@ export interface SanitizedQuestion {
   order: number;
   config: Record<string, unknown>;
   options: SanitizedOption[];
+  attachmentFilename: string | null;
+  attachmentMimeType: string | null;
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -74,5 +76,7 @@ export function sanitizeQuestion(q: QuestionWithOptions): SanitizedQuestion {
     order: q.order,
     config,
     options,
+    attachmentFilename: q.attachmentFilename,
+    attachmentMimeType: q.attachmentMimeType,
   };
 }

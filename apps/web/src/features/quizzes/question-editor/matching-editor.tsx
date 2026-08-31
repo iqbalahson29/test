@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { ConfigEditorProps } from './config-editor-props'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -61,8 +61,7 @@ export function MatchingEditor({ config, onChange }: ConfigEditorProps) {
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={addPair}>
-        <Plus />
+      <Button type="button" className="w-36" onClick={addPair}>
         Add pair
       </Button>
     </div>

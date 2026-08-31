@@ -1,4 +1,5 @@
 import { Navigate } from 'react-router-dom'
+import { LandingPage } from '../marketing/landing-page'
 import { useAuth } from './auth-context'
 import { LoadingScreen } from './loading-screen'
 import { homePathForRole } from './types'
@@ -14,6 +15,9 @@ export function HomeRedirect() {
   }
   if (status === 'no-workspace') {
     return <Navigate to="/no-workspace" replace />
+  }
+  if (status === 'unauthenticated') {
+    return <LandingPage />
   }
   if (status !== 'authenticated' || !membership) {
     return <Navigate to="/login" replace />

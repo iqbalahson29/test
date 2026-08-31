@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import {
   CheckCircle2,
+  ChevronDown,
   ClipboardList,
   Clock,
   Filter,
@@ -29,6 +30,7 @@ import { UpcomingCalendar } from '../attempts/upcoming-calendar'
 import { RecentActivity } from '../attempts/recent-activity'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
@@ -103,6 +105,8 @@ export function StudentAnalyticsPage() {
     queryFn: assignmentsApi.mine,
   })
 
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [trendOpen, setTrendOpen] = useState(false)
   const [range, setRange] = useState<RangeKey>('90')
   const [tab, setTab] = useState<AttemptTab>('all')
   const [sort, setSort] = useState<SortKey>('newest')
@@ -196,97 +200,116 @@ export function StudentAnalyticsPage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatTile
-            label="Average score (graded)"
-            value={data.averagePercent !== null ? `${data.averagePercent}%` : '—'}
-            icon={Percent}
-            footer={
-              scoreDelta !== null ? (
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1',
-                    scoreDelta >= 0 ? 'text-emerald-600' : 'text-destructive',
-                  )}
-                >
-                  {scoreDelta >= 0 ? (
-                    <TrendingUp className="size-3" />
-                  ) : (
-                    <TrendingDown className="size-3" />
-                  )}
-                  {Math.abs(scoreDelta)}% vs last 30 days
-                </span>
-              ) : undefined
-            }
-          />
-          <StatTile
-            label="Total quizzes"
-            value={String(totalQuizzes)}
-            icon={ClipboardList}
-            footer="Across all time"
-          />
-          <StatTile
-            label="Completed"
-            value={String(completedCount)}
-            icon={CheckCircle2}
-            footer={`${completedPct}% of total`}
-          />
-          <StatTile
-            label="In progress"
-            value={String(inProgressCount)}
-            icon={Clock}
-            footer={inProgressCount > 0 ? 'Keep it up!' : undefined}
-          />
-        </div>
+        <Collapsible open={statsOpen} onOpenChange={setStatsOpen}>
+          <Card className="p-0">
+            <CollapsibleTrigger className="group flex w-full items-center justify-between px-4 py-3 text-left">
+              <h2 className="text-[12.5px] font-bold text-gray-800">Overview</h2>
+              <ChevronDown className="size-4 text-gray-400 transition-transform group-data-[state=open]:rotate-180" />
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="grid grid-cols-2 gap-4 border-t border-gray-100 p-4 lg:grid-cols-4">
+                <StatTile
+                  label="Average score (graded)"
+                  value={data.averagePercent !== null ? `${data.averagePercent}%` : '—'}
+                  icon={Percent}
+                  footer={
+                    scoreDelta !== null ? (
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1',
+                          scoreDelta >= 0 ? 'text-emerald-600' : 'text-destructive',
+                        )}
+                      >
+                        {scoreDelta >= 0 ? (
+                          <TrendingUp className="size-3" />
+                        ) : (
+                          <TrendingDown className="size-3" />
+                        )}
+                        {Math.abs(scoreDelta)}% vs last 30 days
+                      </span>
+                    ) : undefined
+                  }
+                />
+                <StatTile
+                  label="Total quizzes"
+                  value={String(totalQuizzes)}
+                  icon={ClipboardList}
+                  footer="Across all time"
+                />
+                <StatTile
+                  label="Completed"
+                  value={String(completedCount)}
+                  icon={CheckCircle2}
+                  footer={`${completedPct}% of total`}
+                />
+                <StatTile
+                  label="In progress"
+                  value={String(inProgressCount)}
+                  icon={Clock}
+                  footer={inProgressCount > 0 ? 'Keep it up!' : undefined}
+                />
+              </div>
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
 
         {data.trend.length > 0 && (
-          <Card>
-            <CardHeader className="flex items-center justify-between">
-              <h2 className="text-[12.5px] font-bold text-gray-800">Score trend</h2>
-              <Select value={range} onValueChange={(v) => setRange(v as RangeKey)}>
-                <SelectTrigger size="sm" className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(RANGE_LABELS) as RangeKey[]).map((r) => (
-                    <SelectItem key={r} value={r}>
-                      {RANGE_LABELS[r]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </CardHeader>
-            <CardContent>
-              {trendInRange.length === 0 ? (
-                <p className="py-10 text-center text-sm text-muted-foreground">
-                  No graded attempts in this range.
-                </p>
-              ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={trendInRange}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="submittedAt"
-                      tickFormatter={formatDate}
-                      tick={{ fontSize: 11 }}
-                    />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
-                    <Tooltip
-                      labelFormatter={(label: unknown) => formatDate(String(label))}
-                      formatter={(value: unknown) => `${value}%`}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="percent"
-                      stroke={LINE_COLOR}
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </CardContent>
-          </Card>
+          <Collapsible open={trendOpen} onOpenChange={setTrendOpen}>
+            <Card>
+              <CardHeader className="flex items-center justify-between">
+                <h2 className="text-[12.5px] font-bold text-gray-800">Score trend</h2>
+                <div className="flex items-center gap-2">
+                  <Select value={range} onValueChange={(v) => setRange(v as RangeKey)}>
+                    <SelectTrigger size="sm" className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(RANGE_LABELS) as RangeKey[]).map((r) => (
+                        <SelectItem key={r} value={r}>
+                          {RANGE_LABELS[r]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <CollapsibleTrigger className="group rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+                    <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" />
+                  </CollapsibleTrigger>
+                </div>
+              </CardHeader>
+              <CollapsibleContent>
+                <CardContent>
+                  {trendInRange.length === 0 ? (
+                    <p className="py-10 text-center text-sm text-muted-foreground">
+                      No graded attempts in this range.
+                    </p>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <LineChart data={trendInRange}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis
+                          dataKey="submittedAt"
+                          tickFormatter={formatDate}
+                          tick={{ fontSize: 11 }}
+                        />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          labelFormatter={(label: unknown) => formatDate(String(label))}
+                          formatter={(value: unknown) => `${value}%`}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="percent"
+                          stroke={LINE_COLOR}
+                          strokeWidth={2}
+                          dot={{ r: 3 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardContent>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         )}
 
         <Card>

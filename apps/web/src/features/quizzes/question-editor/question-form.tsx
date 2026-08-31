@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { ALL_QUESTION_TYPES, QuestionType, getQuestionConfigSchema } from '@quiz-platform/shared'
 import type { QuestionFormValue } from '../types'
 import { emptyConfigFor, emptyOptionsFor } from './config-defaults'
+import { QuestionAttachmentField } from './question-attachment-field'
 import { QuestionTypeFields } from './question-type-fields'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,11 +20,15 @@ import {
 } from '@/components/ui/select'
 
 export function QuestionForm({
+  quizId,
+  questionId,
   initial,
   onSubmit,
   onCancel,
   submitting,
 }: {
+  quizId: string
+  questionId?: string
   initial?: QuestionFormValue
   onSubmit: (value: QuestionFormValue) => void
   onCancel: () => void
@@ -37,6 +42,9 @@ export function QuestionForm({
     initial?.config ?? emptyConfigFor(type),
   )
   const [options, setOptions] = useState(initial?.options ?? emptyOptionsFor(type))
+  const [attachment, setAttachment] = useState<QuestionFormValue['attachment']>(
+    initial?.attachment ?? null,
+  )
   const [error, setError] = useState<string | null>(null)
 
   const onTypeChange = (nextType: QuestionType) => {
@@ -60,11 +68,11 @@ export function QuestionForm({
       return
     }
 
-    onSubmit({ type, prompt, points, config: parsed.data, options })
+    onSubmit({ type, prompt, points, config: parsed.data, options, attachment })
   }
 
   return (
-    <Card>
+    <Card className="rounded-md">
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -118,6 +126,13 @@ export function QuestionForm({
             onChange={setConfig}
             options={options}
             onOptionsChange={setOptions}
+          />
+
+          <QuestionAttachmentField
+            quizId={quizId}
+            questionId={questionId}
+            value={attachment}
+            onChange={setAttachment}
           />
 
           {error && (

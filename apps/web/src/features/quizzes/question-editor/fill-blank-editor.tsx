@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import type { ConfigEditorProps } from './config-editor-props'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -75,8 +75,7 @@ export function FillBlankEditor({ config, onChange }: ConfigEditorProps) {
           </CardContent>
         </Card>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={addBlank}>
-        <Plus />
+      <Button type="button" className="w-36" onClick={addBlank}>
         Add blank
       </Button>
     </div>

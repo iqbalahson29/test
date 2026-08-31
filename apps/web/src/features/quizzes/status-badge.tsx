@@ -4,12 +4,14 @@ import type { QuizStatus } from './types'
 
 const STYLES: Record<QuizStatus, string> = {
   DRAFT: 'bg-muted text-muted-foreground [&>svg]:text-muted-foreground/70',
+  SCHEDULED: 'bg-sky-50 text-sky-700 [&>svg]:text-sky-500',
   PUBLISHED: 'bg-emerald-50 text-emerald-700 [&>svg]:text-emerald-500',
   ARCHIVED: 'bg-amber-50 text-amber-700 [&>svg]:text-amber-500',
 }
 
 const LABELS: Record<QuizStatus, string> = {
   DRAFT: 'Draft',
+  SCHEDULED: 'Scheduled',
   PUBLISHED: 'Published',
   ARCHIVED: 'Archived',
 }

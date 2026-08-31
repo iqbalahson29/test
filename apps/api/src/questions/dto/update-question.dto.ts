@@ -33,4 +33,19 @@ export class UpdateQuestionDto {
   @ValidateNested({ each: true })
   @Type(() => QuestionOptionDto)
   options?: QuestionOptionDto[];
+
+  // Omit to leave the attachment as-is; pass a new key/filename/mimeType
+  // (from the attachment-upload-url endpoint) to replace it, or an empty
+  // string to remove it — see QuestionsService.update.
+  @IsOptional()
+  @IsString()
+  attachmentKey?: string;
+
+  @IsOptional()
+  @IsString()
+  attachmentFilename?: string;
+
+  @IsOptional()
+  @IsString()
+  attachmentMimeType?: string;
 }

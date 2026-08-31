@@ -1,34 +1,19 @@
 import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import type { MyAssignment } from '../assignments/types'
+import {
+  WEEKDAY_LABELS,
+  buildMonthGrid,
+  dateKey,
+  dayLabel,
+  keyToDate,
+  startOfDay,
+} from '@/lib/calendar-grid'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
-const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 const AGENDA_LIMIT = 6
-
-function dateKey(d: Date) {
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
-}
-
-function keyToDate(key: string) {
-  const [year, month, day] = key.split('-').map(Number)
-  return new Date(year, month, day)
-}
-
-function startOfDay(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
-}
-
-function dayLabel(due: Date, today: Date) {
-  const diffDays = Math.round((startOfDay(due).getTime() - today.getTime()) / 86_400_000)
-  if (diffDays === 0) return 'Today'
-  if (diffDays === 1) return 'Tomorrow'
-  if (diffDays === -1) return 'Yesterday'
-  if (diffDays < 0) return `${Math.abs(diffDays)}d overdue`
-  return due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
 
 interface DueItem {
   assignmentId: string
@@ -77,20 +62,7 @@ export function UpcomingCalendar({
     return map
   }, [dueItems])
 
-  const gridStart = useMemo(() => {
-    const firstOfMonth = viewMonth
-    const start = new Date(firstOfMonth)
-    start.setDate(start.getDate() - start.getDay())
-    return start
-  }, [viewMonth])
-
-  const gridDays = useMemo(() => {
-    return Array.from({ length: 42 }, (_, i) => {
-      const d = new Date(gridStart)
-      d.setDate(d.getDate() + i)
-      return d
-    })
-  }, [gridStart])
+  const gridDays = useMemo(() => buildMonthGrid(viewMonth), [viewMonth])
 
   const selectedItems = selectedKey ? (byDay.get(selectedKey) ?? []) : null
 

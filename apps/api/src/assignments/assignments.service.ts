@@ -5,7 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, QuizStatus, Role } from '@prisma/client';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { MembershipsService } from '../memberships/memberships.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 
@@ -14,6 +16,8 @@ export class AssignmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly memberships: MembershipsService,
+    private readonly auditLog: AuditLogService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async create(
@@ -75,7 +79,7 @@ export class AssignmentsService {
       throw new ConflictException('This quiz is already assigned to that target');
     }
 
-    return this.prisma.quizAssignment.create({
+    const created = await this.prisma.quizAssignment.create({
       data: {
         tenantId,
         quizId: dto.quizId,
@@ -85,6 +89,108 @@ export class AssignmentsService {
         dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
       },
     });
+
+    const targetName = hasGroup
+      ? (await this.prisma.group.findUnique({ where: { id: dto.groupId } }))?.name
+      : (
+          await this.prisma.membership.findUnique({
+            where: { id: studentMembershipId },
+            include: { user: { select: { name: true } } },
+          })
+        )?.user.name;
+    await this.auditLog.log(
+      tenantId,
+      dto.quizId,
+      assignedByMembershipId,
+      'ASSIGNMENT_CREATED',
+      targetName,
+    );
+
+    const targetMembershipIds = hasGroup
+      ? (
+          await this.prisma.groupMember.findMany({
+            where: { groupId: dto.groupId },
+            select: { membershipId: true },
+          })
+        ).map((m) => m.membershipId)
+      : [studentMembershipId!];
+    await this.notifications.createMany(targetMembershipIds, {
+      tenantId,
+      type: 'QUIZ_ASSIGNED',
+      title: 'New quiz assigned',
+      body: `"${quiz.title}" was assigned to you.`,
+      link: '/student',
+    });
+
+    return created;
+  }
+
+  /** Assigns a quiz to every current STUDENT in the tenant in one go,
+   * skipping anyone already individually assigned (a group assignment that
+   * happens to cover them isn't treated as a duplicate — this only dedupes
+   * against existing direct student assignments). */
+  async assignToAll(
+    tenantId: string,
+    assignedByMembershipId: string,
+    quizId: string,
+    dueAt?: string,
+  ) {
+    const quiz = await this.prisma.quiz.findUnique({ where: { id: quizId } });
+    if (!quiz || quiz.tenantId !== tenantId) {
+      throw new NotFoundException('Quiz not found');
+    }
+    if (quiz.status !== QuizStatus.PUBLISHED) {
+      throw new BadRequestException('Only published quizzes can be assigned');
+    }
+
+    const [students, existing] = await Promise.all([
+      this.prisma.membership.findMany({
+        where: { tenantId, role: Role.STUDENT },
+        select: { id: true },
+      }),
+      this.prisma.quizAssignment.findMany({
+        where: { quizId, studentMembershipId: { not: null } },
+        select: { studentMembershipId: true },
+      }),
+    ]);
+    const alreadyAssigned = new Set(existing.map((e) => e.studentMembershipId));
+    const toAssign = students.filter((s) => !alreadyAssigned.has(s.id));
+
+    if (toAssign.length > 0) {
+      await this.prisma.quizAssignment.createMany({
+        data: toAssign.map((s) => ({
+          tenantId,
+          quizId,
+          studentMembershipId: s.id,
+          assignedByMembershipId,
+          dueAt: dueAt ? new Date(dueAt) : undefined,
+        })),
+      });
+      await this.notifications.createMany(
+        toAssign.map((s) => s.id),
+        {
+          tenantId,
+          type: 'QUIZ_ASSIGNED',
+          title: 'New quiz assigned',
+          body: `"${quiz.title}" was assigned to you.`,
+          link: '/student',
+        },
+      );
+    }
+
+    await this.auditLog.log(
+      tenantId,
+      quizId,
+      assignedByMembershipId,
+      'ASSIGNMENT_CREATED',
+      `all students (${toAssign.length} newly assigned)`,
+    );
+
+    return {
+      assigned: toAssign.length,
+      alreadyAssigned: students.length - toAssign.length,
+      totalStudents: students.length,
+    };
   }
 
   async listForQuiz(tenantId: string, quizId: string) {
@@ -97,7 +203,9 @@ export class AssignmentsService {
       where: { quizId },
       include: {
         student: {
-          include: { user: { select: { id: true, email: true, name: true } } },
+          include: {
+            user: { select: { id: true, email: true, name: true, avatarUrl: true } },
+          },
         },
         group: true,
       },
@@ -111,18 +219,120 @@ export class AssignmentsService {
             type: 'STUDENT' as const,
             name: a.student.user.name,
             email: a.student.user.email,
+            avatarUrl: a.student.user.avatarUrl,
           }
         : { type: 'GROUP' as const, name: a.group!.name },
     }));
   }
 
-  async remove(tenantId: string, id: string) {
-    const assignment = await this.prisma.quizAssignment.findUnique({ where: { id } });
+  /**
+   * Tenant-wide, all-quizzes assignment listing — the calendar backbone
+   * shared by the admin dashboard's "quiz calendar" and the student's
+   * "My quizzes" calendar reads the same QuizAssignment rows via mine().
+   */
+  async listAll(tenantId: string) {
+    const assignments = await this.prisma.quizAssignment.findMany({
+      where: { tenantId, dueAt: { not: null } },
+      include: {
+        quiz: { select: { id: true, title: true, status: true } },
+        student: {
+          include: { user: { select: { name: true, email: true } } },
+        },
+        group: { select: { name: true } },
+      },
+      orderBy: { dueAt: 'asc' },
+    });
+    return assignments.map((a) => ({
+      id: a.id,
+      quizId: a.quizId,
+      quizTitle: a.quiz.title,
+      dueAt: a.dueAt,
+      target: a.student
+        ? { type: 'STUDENT' as const, name: a.student.user.name }
+        : { type: 'GROUP' as const, name: a.group!.name },
+    }));
+  }
+
+  async remove(tenantId: string, id: string, actorMembershipId?: string) {
+    const assignment = await this.prisma.quizAssignment.findUnique({
+      where: { id },
+      include: {
+        student: { include: { user: { select: { name: true } } } },
+        group: true,
+      },
+    });
     if (!assignment || assignment.tenantId !== tenantId) {
       throw new NotFoundException('Assignment not found');
     }
     await this.prisma.quizAssignment.delete({ where: { id } });
+    await this.auditLog.log(
+      tenantId,
+      assignment.quizId,
+      actorMembershipId ?? null,
+      'ASSIGNMENT_REMOVED',
+      assignment.student?.user.name ?? assignment.group?.name,
+    );
     return { id };
+  }
+
+  /**
+   * Expands a quiz's assignments (direct students + whole groups) into a
+   * deduped list of individual assigned students, for the quiz detail
+   * page's "Assigned to" stat tile and assignment summary card.
+   */
+  async summaryForQuiz(tenantId: string, quizId: string) {
+    const quiz = await this.prisma.quiz.findUnique({ where: { id: quizId } });
+    if (!quiz || quiz.tenantId !== tenantId) {
+      throw new NotFoundException('Quiz not found');
+    }
+
+    const assignments = await this.prisma.quizAssignment.findMany({
+      where: { quizId },
+      include: {
+        student: {
+          include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+        },
+        group: {
+          include: {
+            members: {
+              include: {
+                membership: {
+                  include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const students = new Map<
+      string,
+      { id: string; name: string; avatarUrl: string | null }
+    >();
+    let nearestDueAt: Date | null = null;
+    for (const a of assignments) {
+      if (a.dueAt && (!nearestDueAt || a.dueAt.getTime() < nearestDueAt.getTime())) {
+        nearestDueAt = a.dueAt;
+      }
+      if (a.student) {
+        students.set(a.student.id, {
+          id: a.student.id,
+          name: a.student.user.name,
+          avatarUrl: a.student.user.avatarUrl,
+        });
+      } else if (a.group) {
+        for (const m of a.group.members) {
+          students.set(m.membership.id, {
+            id: m.membership.id,
+            name: m.membership.user.name,
+            avatarUrl: m.membership.user.avatarUrl,
+          });
+        }
+      }
+    }
+
+    return { assignedStudents: [...students.values()], nearestDueAt };
   }
 
   async mine(tenantId: string, studentMembershipId: string) {

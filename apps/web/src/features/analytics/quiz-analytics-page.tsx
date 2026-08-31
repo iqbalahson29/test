@@ -39,7 +39,7 @@ export function QuizAnalyticsPage() {
   })
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <h1 className="text-[17px] font-bold text-gray-900">Analytics — {data.quizTitle}</h1>
       <p className="mb-6 text-[12px] text-gray-400">
         {data.gradedAttempts} graded of {data.totalAttempts} total attempt
@@ -75,7 +75,7 @@ export function QuizAnalyticsPage() {
         <p className="text-sm text-muted-foreground">No graded attempts yet.</p>
       ) : (
         <div className="space-y-6">
-          <Card>
+          <Card className="rounded-md">
             <CardHeader>
               <h2 className="text-[12.5px] font-bold text-gray-800">Score distribution</h2>
             </CardHeader>
@@ -92,7 +92,7 @@ export function QuizAnalyticsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="rounded-md">
             <CardHeader>
               <h2 className="text-[12.5px] font-bold text-gray-800">Question difficulty (hardest first)</h2>
             </CardHeader>

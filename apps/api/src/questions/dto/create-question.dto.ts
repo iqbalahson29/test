@@ -35,4 +35,18 @@ export class CreateQuestionDto {
   @ValidateNested({ each: true })
   @Type(() => QuestionOptionDto)
   options?: QuestionOptionDto[];
+
+  // Set together after calling the attachment-upload-url endpoint and
+  // PUTting the file to S3 — see QuestionsService.
+  @IsOptional()
+  @IsString()
+  attachmentKey?: string;
+
+  @IsOptional()
+  @IsString()
+  attachmentFilename?: string;
+
+  @IsOptional()
+  @IsString()
+  attachmentMimeType?: string;
 }

@@ -20,6 +20,8 @@ export interface AttemptQuestion {
   fileKey: string | null
   awardedPoints: string | null
   feedback: string | null
+  attachmentFilename: string | null
+  attachmentMimeType: string | null
 }
 
 export interface AttemptDetail {

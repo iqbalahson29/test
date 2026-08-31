@@ -4,6 +4,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiPost } from '../lib/api-client'
 import { setAccessToken } from './token-store'
 import type {
+  EnterWorkspaceApiResponse,
+  ExitWorkspaceApiResponse,
   LoginApiResponse,
   Membership,
   RefreshApiResponse,
@@ -25,6 +27,8 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<AuthStatus>
   selectWorkspace: (membershipId: string) => Promise<void>
   switchWorkspace: (membershipId: string) => Promise<void>
+  enterWorkspace: (tenantId: string) => Promise<void>
+  exitToSuperAdmin: () => Promise<void>
   refreshSession: () => Promise<void>
   logout: () => Promise<void>
 }
@@ -130,10 +134,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
     setAccessToken(res.accessToken)
     setMembership(res.membership)
+    // Also reachable from 'no-workspace' (e.g. joining by code right after
+    // having zero memberships) — without this, status stays 'no-workspace'
+    // and ProtectedRoute bounces the very next navigation back to /login
+    // even though the token/membership above are already valid.
+    setStatus('authenticated')
     // Every cached query (assignments/mine, quizzes, analytics, ...) was
     // fetched under the old membership's tenant scope — without this,
     // components would keep showing the previous workspace's data until
     // something happens to trigger a refetch.
+    queryClient.clear()
+  }
+
+  // Used by the super admin's "Enter workspace" flow — upserts a real ADMIN
+  // membership server-side and swaps in a normal scoped session, so from
+  // here on the super admin is indistinguishable from any other admin.
+  const enterWorkspace = async (tenantId: string) => {
+    const res = await apiPost<EnterWorkspaceApiResponse>('/auth/enter-workspace', {
+      tenantId,
+    })
+    setAccessToken(res.accessToken)
+    setMembership(res.membership)
+    setStatus('authenticated')
+    queryClient.clear()
+  }
+
+  // Reverses enterWorkspace() — drops the scoped membership session and
+  // re-issues a superadmin session for the same account.
+  const exitToSuperAdmin = async () => {
+    const res = await apiPost<ExitWorkspaceApiResponse>('/auth/exit-workspace')
+    setAccessToken(res.accessToken)
+    setMembership(null)
+    setStatus('superadmin')
     queryClient.clear()
   }
 
@@ -160,6 +192,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         selectWorkspace,
         switchWorkspace,
+        enterWorkspace,
+        exitToSuperAdmin,
         refreshSession,
         logout,
       }}

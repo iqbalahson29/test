@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
@@ -12,15 +15,28 @@ import { AttemptsModule } from './attempts/attempts.module';
 import { GradingModule } from './grading/grading.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { TenantRequestsModule } from './tenant-requests/tenant-requests.module';
+import { TenantsModule } from './tenants/tenants.module';
+import { UsersModule } from './users/users.module';
 import { WorkspaceJoinRequestsModule } from './workspace-join-requests/workspace-join-requests.module';
+import { MemberInvitationsModule } from './member-invitations/member-invitations.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { SearchModule } from './search/search.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
+    // Global default: 200 req/min per IP, generous enough for normal use
+    // (polling, notifications, autosave) while blocking abusive bursts.
+    // Individual routes (e.g. login) tighten this with @Throttle(...).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 200 }]),
     PrismaModule,
     HealthModule,
     AuthModule,
     TenantRequestsModule,
+    TenantsModule,
+    UsersModule,
     MembershipsModule,
     QuizzesModule,
     QuestionsModule,
@@ -30,6 +46,11 @@ import { WorkspaceJoinRequestsModule } from './workspace-join-requests/workspace
     GradingModule,
     AnalyticsModule,
     WorkspaceJoinRequestsModule,
+    MemberInvitationsModule,
+    DashboardModule,
+    SearchModule,
+    NotificationsModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

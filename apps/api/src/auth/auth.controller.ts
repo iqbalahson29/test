@@ -12,15 +12,21 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import { AUTH_THROTTLE } from '../common/auth-throttle.constant';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
+import { EnterWorkspaceDto } from './dto/enter-workspace.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SelectWorkspaceDto } from './dto/select-workspace.dto';
 import { SwitchWorkspaceDto } from './dto/switch-workspace.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { SuperAdminGuard } from './super-admin.guard';
 import type { AccessTokenPayload, AnyTokenPayload } from './token.types';
 
 const REFRESH_COOKIE = 'refresh_token';
@@ -38,12 +44,16 @@ const REFRESH_COOKIE_OPTIONS = {
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  // Tighter than the global default: these are the routes brute-force /
+  // credential-stuffing attempts actually target.
+  @Throttle(AUTH_THROTTLE)
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
+  @Throttle(AUTH_THROTTLE)
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -75,6 +85,22 @@ export class AuthController {
       return { status: 'no-workspace', accessToken: result.accessToken };
     }
     return { status: 'superadmin', accessToken: result.accessToken };
+  }
+
+  // Same throttle as login/register — the endpoint an attacker would hammer
+  // to spam a target's inbox or brute-force enumerate registered emails.
+  @Throttle(AUTH_THROTTLE)
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @Throttle(AUTH_THROTTLE)
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
   @Post('select-workspace')
@@ -123,6 +149,50 @@ export class AuthController {
       accessToken: result.accessToken,
       membership: result.membership,
     };
+  }
+
+  // AuthGuard('jwt') here, not JwtAuthGuard — a super admin's token is
+  // 'superadmin', not 'access'.
+  @Post('enter-workspace')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  async enterWorkspace(
+    @Req() req: Request & { user: AnyTokenPayload },
+    @Body() dto: EnterWorkspaceDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.enterWorkspace(
+      req.user.sub,
+      dto.tenantId,
+    );
+    // enterWorkspace() never actually resolves any other status — this
+    // just satisfies the shared LoginResult return type.
+    if (result.status !== 'ok') {
+      throw new UnauthorizedException();
+    }
+    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
+    return {
+      status: 'ok',
+      accessToken: result.accessToken,
+      membership: result.membership,
+    };
+  }
+
+  @Post('exit-workspace')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  async exitWorkspace(
+    @CurrentUser() user: AccessTokenPayload,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.exitToSuperAdmin(user.sub);
+    // exitToSuperAdmin() never actually resolves any other status — this
+    // just satisfies the shared LoginResult return type.
+    if (result.status !== 'superadmin') {
+      throw new UnauthorizedException();
+    }
+    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
+    return { status: 'superadmin', accessToken: result.accessToken };
   }
 
   @Get('my-memberships')
@@ -183,14 +253,27 @@ export class AuthController {
     return this.authService.getProfile(req.user.sub, membershipId);
   }
 
+  // Tighter than the global default — this is the endpoint that verifies a
+  // guessed currentPassword, so it's the natural brute-force target.
+  @Throttle(AUTH_THROTTLE)
   @Patch('profile')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard('jwt'))
-  updateProfile(
+  async updateProfile(
     @Req() req: Request & { user: AnyTokenPayload },
     @Body() dto: UpdateProfileDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    return this.authService.updateProfile(req.user.sub, dto);
+    const { profile, tokens } = await this.authService.updateProfile(req.user, dto);
+    if (tokens) {
+      // The password just changed — this re-issues *this* session's own
+      // tokens on the new tokenVersion (see AuthService.updateProfile), so
+      // only this session survives; every other one is logged out the next
+      // time it tries to refresh.
+      res.cookie(REFRESH_COOKIE, tokens.refreshToken, REFRESH_COOKIE_OPTIONS);
+      return { ...profile, accessToken: tokens.accessToken };
+    }
+    return profile;
   }
 
   @Post('logout')

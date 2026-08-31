@@ -6,7 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AttemptStatus, Prisma, QuestionType, QuizStatus } from '@prisma/client';
+import { SESSION_LOCK_TIMEOUT_MS } from '../common/session-lock.constants';
 import { GradingService } from '../grading/grading.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { RequestUploadUrlDto } from './dto/request-upload-url.dto';
@@ -19,6 +21,7 @@ export class AttemptsService {
     private readonly prisma: PrismaService,
     private readonly grading: GradingService,
     private readonly storage: StorageService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async verifyAssigned(
@@ -100,7 +103,41 @@ export class AttemptsService {
     };
   }
 
-  async start(tenantId: string, studentMembershipId: string, quizId: string) {
+  /** True when `attempt`'s session lock is held by a *different*, still-live
+   * session — i.e. some other device is actively taking this attempt right
+   * now. A missing lock, an expired one (no heartbeat within
+   * SESSION_LOCK_TIMEOUT_MS), or one already owned by `sessionId` are all
+   * fair game to (re)claim. */
+  private isLockLiveAndForeign(
+    attempt: { lockSessionId: string | null; lastHeartbeatAt: Date | null },
+    sessionId: string,
+  ): boolean {
+    if (!attempt.lockSessionId || attempt.lockSessionId === sessionId) {
+      return false;
+    }
+    if (!attempt.lastHeartbeatAt) {
+      return false;
+    }
+    return attempt.lastHeartbeatAt.getTime() > Date.now() - SESSION_LOCK_TIMEOUT_MS;
+  }
+
+  /** Claims (or refreshes) the session lock for `sessionId`. Called on
+   * start/resume and on every subsequent write to the attempt, so ordinary
+   * activity — not just the dedicated heartbeat endpoint — keeps the lock
+   * alive. */
+  private touchLock(attemptId: string, sessionId: string) {
+    return this.prisma.attempt.update({
+      where: { id: attemptId },
+      data: { lockSessionId: sessionId, lockedAt: new Date(), lastHeartbeatAt: new Date() },
+    });
+  }
+
+  async start(
+    tenantId: string,
+    studentMembershipId: string,
+    quizId: string,
+    sessionId: string,
+  ) {
     const quiz = await this.prisma.quiz.findUnique({ where: { id: quizId } });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
@@ -115,6 +152,12 @@ export class AttemptsService {
       where: { quizId, studentMembershipId, status: AttemptStatus.IN_PROGRESS },
     });
     if (existingInProgress) {
+      if (this.isLockLiveAndForeign(existingInProgress, sessionId)) {
+        throw new ForbiddenException(
+          'This test is currently active in another session',
+        );
+      }
+      await this.touchLock(existingInProgress.id, sessionId);
       return this.buildAttemptView(existingInProgress.id, studentMembershipId);
     }
 
@@ -129,15 +172,51 @@ export class AttemptsService {
       throw new BadRequestException('No attempts remaining for this quiz');
     }
 
-    const attempt = await this.prisma.attempt.create({
-      data: {
-        quizId,
-        studentMembershipId,
-        attemptNumber: priorCount + 1,
-        status: AttemptStatus.IN_PROGRESS,
-      },
-    });
-    return this.buildAttemptView(attempt.id, studentMembershipId);
+    try {
+      const attempt = await this.prisma.attempt.create({
+        data: {
+          quizId,
+          studentMembershipId,
+          attemptNumber: priorCount + 1,
+          status: AttemptStatus.IN_PROGRESS,
+          lockSessionId: sessionId,
+          lockedAt: new Date(),
+          lastHeartbeatAt: new Date(),
+        },
+      });
+      return this.buildAttemptView(attempt.id, studentMembershipId);
+    } catch (err) {
+      // Two concurrent `start` calls (double-click, flaky connection) can both
+      // pass the checks above and race on @@unique([quizId, studentMembershipId,
+      // attemptNumber]) — the loser joins the winner's attempt instead of 500ing.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const concurrent = await this.prisma.attempt.findFirst({
+          where: { quizId, studentMembershipId, status: AttemptStatus.IN_PROGRESS },
+        });
+        if (concurrent) {
+          await this.touchLock(concurrent.id, sessionId);
+          return this.buildAttemptView(concurrent.id, studentMembershipId);
+        }
+      }
+      throw err;
+    }
+  }
+
+  /** Pinged periodically by the test-taking screen to prove this session is
+   * still the one actively taking the attempt — see SESSION_LOCK_TIMEOUT_MS. */
+  async heartbeat(studentMembershipId: string, attemptId: string, sessionId: string) {
+    const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
+    if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
+      throw new NotFoundException('Attempt not found');
+    }
+    if (attempt.status !== AttemptStatus.IN_PROGRESS) {
+      return { ok: true };
+    }
+    if (this.isLockLiveAndForeign(attempt, sessionId)) {
+      throw new ForbiddenException('This test is currently active in another session');
+    }
+    await this.touchLock(attemptId, sessionId);
+    return { ok: true };
   }
 
   findOne(studentMembershipId: string, attemptId: string) {
@@ -156,6 +235,7 @@ export class AttemptsService {
     attemptId: string,
     questionId: string,
     dto: SaveResponseDto,
+    sessionId: string,
   ) {
     const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
@@ -163,6 +243,9 @@ export class AttemptsService {
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is no longer in progress');
+    }
+    if (this.isLockLiveAndForeign(attempt, sessionId)) {
+      throw new ForbiddenException('This test is currently active in another session');
     }
 
     const question = await this.prisma.question.findUnique({ where: { id: questionId } });
@@ -178,6 +261,7 @@ export class AttemptsService {
       update: { answer, fileKey: dto.fileKey },
       create: { attemptId, questionId, answer, fileKey: dto.fileKey },
     });
+    await this.touchLock(attemptId, sessionId);
     return { ok: true };
   }
 
@@ -186,6 +270,7 @@ export class AttemptsService {
     attemptId: string,
     questionId: string,
     dto: RequestUploadUrlDto,
+    sessionId: string,
   ) {
     const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
@@ -193,6 +278,9 @@ export class AttemptsService {
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is no longer in progress');
+    }
+    if (this.isLockLiveAndForeign(attempt, sessionId)) {
+      throw new ForbiddenException('This test is currently active in another session');
     }
 
     const question = await this.prisma.question.findUnique({ where: { id: questionId } });
@@ -206,10 +294,36 @@ export class AttemptsService {
     const safeFilename = dto.filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const fileKey = `attempts/${attemptId}/${questionId}/${randomUUID()}-${safeFilename}`;
     const uploadUrl = await this.storage.getUploadUrl(fileKey, dto.contentType);
+    await this.touchLock(attemptId, sessionId);
     return { uploadUrl, fileKey };
   }
 
-  async submit(studentMembershipId: string, attemptId: string) {
+  async getAttachmentUrl(
+    studentMembershipId: string,
+    attemptId: string,
+    questionId: string,
+  ) {
+    const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
+    if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
+      throw new NotFoundException('Attempt not found');
+    }
+
+    const question = await this.prisma.question.findUnique({ where: { id: questionId } });
+    if (!question || question.quizId !== attempt.quizId) {
+      throw new NotFoundException('Question not found on this attempt');
+    }
+    if (!question.attachmentKey) {
+      throw new NotFoundException('This question has no attachment');
+    }
+
+    const viewUrl = await this.storage.getViewUrl(
+      question.attachmentKey,
+      question.attachmentFilename ?? 'document',
+    );
+    return { viewUrl };
+  }
+
+  async submit(studentMembershipId: string, attemptId: string, sessionId: string) {
     const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
       throw new NotFoundException('Attempt not found');
@@ -217,11 +331,40 @@ export class AttemptsService {
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is not in progress');
     }
+    if (this.isLockLiveAndForeign(attempt, sessionId)) {
+      throw new ForbiddenException('This test is currently active in another session');
+    }
     await this.prisma.attempt.update({
       where: { id: attemptId },
-      data: { status: AttemptStatus.SUBMITTED, submittedAt: new Date() },
+      data: {
+        status: AttemptStatus.SUBMITTED,
+        submittedAt: new Date(),
+        lockSessionId: null,
+        lockedAt: null,
+        lastHeartbeatAt: null,
+      },
     });
     await this.grading.gradeAttempt(attemptId);
+
+    const quiz = await this.prisma.quiz.findUniqueOrThrow({ where: { id: attempt.quizId } });
+    const graded = await this.prisma.attempt.findUniqueOrThrow({ where: { id: attemptId } });
+    if (graded.status === AttemptStatus.GRADED) {
+      await this.notifications.create(studentMembershipId, {
+        tenantId: quiz.tenantId,
+        type: 'RESPONSE_GRADED',
+        title: 'Quiz graded',
+        body: `"${quiz.title}" has been graded.`,
+        link: `/student/attempts/${attemptId}`,
+      });
+    } else {
+      await this.notifications.notifyAdmins(quiz.tenantId, {
+        type: 'GRADING_PENDING',
+        title: 'Submission needs grading',
+        body: `A response to "${quiz.title}" is waiting to be graded.`,
+        link: `/teacher/quizzes/${quiz.id}/grading`,
+      });
+    }
+
     return this.buildAttemptView(attemptId, studentMembershipId);
   }
 }

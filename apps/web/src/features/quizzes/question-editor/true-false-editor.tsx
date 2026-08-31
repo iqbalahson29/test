@@ -18,8 +18,8 @@ export function TrueFalseEditor({
         onValueChange={(v) => {
           const i = Number(v)
           onChange([
-            { text: 'True', isCorrect: i === 0 },
-            { text: 'False', isCorrect: i === 1 },
+            { ...options[0], text: 'True', isCorrect: i === 0 },
+            { ...options[1], text: 'False', isCorrect: i === 1 },
           ])
         }}
       >

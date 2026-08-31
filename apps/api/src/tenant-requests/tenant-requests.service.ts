@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Role, TenantRequestStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTenantRequestDto } from './dto/create-tenant-request.dto';
 
@@ -13,6 +14,7 @@ const requestSelect = {
   id: true,
   workspaceName: true,
   slug: true,
+  description: true,
   requesterName: true,
   requesterEmail: true,
   status: true,
@@ -31,7 +33,10 @@ function slugify(input: string): string {
 
 @Injectable()
 export class TenantRequestsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async create(dto: CreateTenantRequestDto) {
     const existingUser = await this.prisma.user.findUnique({
@@ -47,16 +52,26 @@ export class TenantRequestsService {
     const slug = await this.uniqueSlug(dto.workspaceName);
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
-    return this.prisma.tenantRequest.create({
+    const request = await this.prisma.tenantRequest.create({
       data: {
         workspaceName: dto.workspaceName,
         slug,
+        description: dto.description?.trim() || null,
         requesterName: dto.requesterName,
         requesterEmail: dto.requesterEmail,
         passwordHash,
       },
       select: requestSelect,
     });
+
+    await this.notifications.notifySuperAdmins({
+      type: 'WORKSPACE_REQUEST_SUBMITTED',
+      title: `New workspace request: ${request.workspaceName}`,
+      body: `${request.requesterName} (${request.requesterEmail}) wants to create this workspace.`,
+      link: '/superadmin',
+    });
+
+    return request;
   }
 
   list(status?: TenantRequestStatus) {
@@ -90,7 +105,11 @@ export class TenantRequestsService {
 
     return this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
-        data: { name: request.workspaceName, slug: request.slug },
+        data: {
+          name: request.workspaceName,
+          slug: request.slug,
+          description: request.description,
+        },
       });
 
       const user = existingUser

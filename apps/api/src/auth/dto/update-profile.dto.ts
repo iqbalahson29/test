@@ -7,6 +7,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { IsStrongPassword } from '../../common/is-strong-password.decorator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -25,12 +26,14 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
-  @MinLength(8)
+  @IsStrongPassword()
   newPassword?: string;
 
+  // A plain URL or a base64 data: URL for an uploaded photo — bounded well
+  // above what a resized (256px) JPEG avatar encodes to.
   @IsOptional()
   @IsString()
-  @MaxLength(2048)
+  @MaxLength(350000)
   avatarUrl?: string;
 
   @IsOptional()

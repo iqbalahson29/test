@@ -34,6 +34,8 @@
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/schedule": "6.1.3",
+    "@nestjs/throttler": "6.5.0",
     "@prisma/client": "^6.19.3",
     "@quiz-platform/shared": "workspace:*",
     "bcrypt": "^5.1.1",

@@ -55,7 +55,7 @@ function GradingQueueRow({ item, quizId }: { item: GradingQueueItem; quizId: str
   }
 
   return (
-    <Card>
+    <Card className="rounded-md">
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="flex items-center justify-between gap-2">
@@ -133,7 +133,7 @@ export function GradingQueuePage() {
   })
 
   return (
-    <div className="max-w-2xl">
+    <div>
       <h1 className="mb-4 text-[17px] font-bold text-gray-900">
         Grading queue{data && ` (${data.length} pending)`}
       </h1>

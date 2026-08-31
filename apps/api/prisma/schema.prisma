@@ -18,6 +18,11 @@ enum TenantRequestStatus {
   REJECTED
 }
 
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 enum QuestionType {
   MCQ_SINGLE
   MCQ_MULTI
@@ -32,6 +37,7 @@ enum QuestionType {
 
 enum QuizStatus {
   DRAFT
+  SCHEDULED
   PUBLISHED
   ARCHIVED
 }
@@ -46,10 +52,24 @@ model User {
   id                    String                 @id @default(cuid())
   email                 String                 @unique
   passwordHash          String
+  // Bumped whenever the password changes; embedded in every issued token and
+  // checked on refresh — invalidates every other session's refresh token
+  // (all other devices/tabs) the moment the password is changed, without a
+  // token-revocation table. The session that made the change is re-issued
+  // fresh tokens at the same call so only it survives.
+  tokenVersion          Int                    @default(0)
+  // Hashes of the last PASSWORD_HISTORY_LIMIT passwords (most recent first),
+  // checked on change so a "new" password can't just be an old one again.
+  previousPasswordHashes String[]              @default([])
   name                  String
   isSuperAdmin          Boolean                @default(false)
+  isSuspended           Boolean                @default(false)
+  suspendedAt           DateTime?
+  lastLoginAt           DateTime?
   memberships           Membership[]
   workspaceJoinRequests WorkspaceJoinRequest[]
+  notifications         Notification[]
+  passwordResetTokens   PasswordResetToken[]
 
   // Profile — most of these are only meaningful for STUDENT memberships
   // (gradeLevel, studentId, guardian*), but they live on User rather than a
@@ -77,12 +97,18 @@ model Tenant {
   id                    String                 @id @default(cuid())
   name                  String
   slug                  String                 @unique
+  description           String?
+  bannerImageUrl        String?
+  joinCode              String?                @unique
+  status                TenantStatus           @default(ACTIVE)
+  suspendedAt           DateTime?
   memberships           Membership[]
   groups                Group[]
   quizzes               Quiz[]
   assignments           QuizAssignment[]
   tenantRequests        TenantRequest[]
   workspaceJoinRequests WorkspaceJoinRequest[]
+  memberInvitations     MemberInvitation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -100,12 +126,15 @@ model Membership {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  createdQuizzes      Quiz[]           @relation("QuizCreatedBy")
+  createdQuizzes      Quiz[]             @relation("QuizCreatedBy")
   groupMemberships    GroupMember[]
-  assignmentsCreated  QuizAssignment[] @relation("AssignmentCreatedBy")
-  assignmentsReceived QuizAssignment[] @relation("AssignmentStudent")
+  assignmentsCreated  QuizAssignment[]   @relation("AssignmentCreatedBy")
+  assignmentsReceived QuizAssignment[]   @relation("AssignmentStudent")
   attempts            Attempt[]
-  gradedResponses     Response[]       @relation("ResponseGradedBy")
+  gradedResponses     Response[]         @relation("ResponseGradedBy")
+  auditLogs           AuditLog[]
+  sentInvitations     MemberInvitation[]
+  notifications       Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -120,6 +149,7 @@ model TenantRequest {
   id             String              @id @default(cuid())
   workspaceName  String
   slug           String              @unique
+  description    String?
   requesterName  String
   requesterEmail String
   passwordHash   String
@@ -149,6 +179,50 @@ model WorkspaceJoinRequest {
 
   @@index([tenantId])
   @@index([userId])
+}
+
+enum MemberInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+// An admin-initiated invite for an email with no existing account yet.
+// Distinct from WorkspaceJoinRequest, which is student-initiated — an
+// invitation is created by the tenant's own admin and pre-assigns a role;
+// the invitee accepts it by setting a password at /accept-invite/:token.
+// A single-use, expiring token for the "forgot password" flow. The token
+// itself is only ever emailed to the user — tokenHash (sha256) is what's
+// stored, so a DB leak alone can't be used to take over accounts.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model MemberInvitation {
+  id                    String                  @id @default(cuid())
+  tenantId              String
+  email                 String
+  role                  Role
+  token                 String                  @unique
+  status                MemberInvitationStatus  @default(PENDING)
+  invitedByMembershipId String?
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invitedBy Membership? @relation(fields: [invitedByMembershipId], references: [id])
+
+  createdAt  DateTime  @default(now())
+  acceptedAt DateTime?
+
+  @@index([tenantId])
 }
 
 model Group {
@@ -197,6 +271,7 @@ model Quiz {
   questions   Question[]
   assignments QuizAssignment[]
   attempts    Attempt[]
+  auditLogs   AuditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -215,6 +290,13 @@ model Question {
   points Decimal      @db.Decimal(6, 2)
   order  Int
   config Json         @default("{}")
+
+  // Optional reference document (PDF/DOCX) a teacher attaches for students
+  // to view alongside the question — separate from `config` so it survives
+  // the per-type answer-key stripping in question-sanitizer.ts untouched.
+  attachmentKey      String?
+  attachmentFilename String?
+  attachmentMimeType String?
 
   quiz      Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
   options   QuestionOption[]
@@ -271,6 +353,17 @@ model Attempt {
   score               Decimal?      @db.Decimal(7, 2)
   maxScore            Decimal?      @db.Decimal(7, 2)
 
+  // Single-active-session lock, held by whichever login session is currently
+  // taking this attempt. `lockSessionId` matches the `sessionId` claim on
+  // that session's JWTs; a new login for this attempt's student is refused
+  // (see AuthService.issueTokensForMembership) while lastHeartbeatAt is
+  // still within the liveness window, so at most one device can act on an
+  // in-progress attempt at a time. Cleared on submit, and force-clearable by
+  // a teacher if a device goes stale without a clean handoff.
+  lockSessionId   String?
+  lockedAt        DateTime?
+  lastHeartbeatAt DateTime?
+
   quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
   student   Membership @relation(fields: [studentMembershipId], references: [id], onDelete: Cascade)
   responses Response[]
@@ -300,4 +393,61 @@ model Response {
 
   @@unique([attemptId, questionId])
   @@index([attemptId])
+}
+
+// A persisted, human-readable history of actions taken on a quiz — powers
+// the quiz detail page's "Activity log". `action` is a small closed set of
+// string tags ('QUIZ_CREATED' | 'STATUS_CHANGED' | 'SETTINGS_UPDATED' |
+// 'QUESTIONS_UPDATED' | 'ASSIGNMENT_CREATED' | 'ASSIGNMENT_REMOVED'); kept
+// as a plain string rather than an enum since new action types are cheap to
+// add and don't need a migration. `detail` carries the one piece of
+// context each message needs (new status, or an assignment target name).
+model AuditLog {
+  id                String  @id @default(cuid())
+  tenantId          String
+  quizId            String?
+  actorMembershipId String?
+  action            String
+  detail            String?
+
+  quiz  Quiz?       @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  actor Membership? @relation(fields: [actorMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([quizId])
+  @@index([tenantId])
+}
+
+// In-app notification for one membership (never shared across memberships,
+// even for the same user in another tenant) — the redirect target lives in
+// `link` as an app-relative path the frontend navigates to on click. `type`
+// is a small closed set of string tags (see NotificationType in
+// notifications.service.ts), kept as a plain string for the same reason as
+// AuditLog.action: new types are cheap to add and don't need a migration.
+//
+// Exactly one of membershipId / recipientUserId is set: membershipId for
+// ordinary tenant-scoped notifications (a real Membership row), or
+// recipientUserId for platform-level ones aimed at a User directly — the
+// only case today is a super admin, who has no membership of their own to
+// scope a tenant notification to.
+model Notification {
+  id              String  @id @default(cuid())
+  tenantId        String?
+  membershipId    String?
+  recipientUserId String?
+  type            String
+  title           String
+  body            String?
+  link            String?
+  read            Boolean @default(false)
+
+  membership Membership? @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  recipient  User?       @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([membershipId, read])
+  @@index([recipientUserId, read])
+  @@index([tenantId])
 }

@@ -14,7 +14,7 @@ export function StatTile({
   footer?: ReactNode
 }) {
   return (
-    <Card>
+    <Card className="rounded-md">
       <CardContent className="flex items-start justify-between gap-2">
         <div>
           <p className="text-sm text-muted-foreground">{label}</p>

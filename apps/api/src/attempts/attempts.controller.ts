@@ -27,7 +27,7 @@ export class AttemptsController {
 
   @Post()
   start(@CurrentUser() user: AccessTokenPayload, @Body() dto: StartAttemptDto) {
-    return this.attempts.start(user.tenantId, user.membershipId, dto.quizId);
+    return this.attempts.start(user.tenantId, user.membershipId, dto.quizId, user.sessionId);
   }
 
   @Get()
@@ -50,7 +50,21 @@ export class AttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: SaveResponseDto,
   ) {
-    return this.attempts.saveResponse(user.membershipId, id, questionId, dto);
+    return this.attempts.saveResponse(user.membershipId, id, questionId, dto, user.sessionId);
+  }
+
+  @Post(':id/heartbeat')
+  heartbeat(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+    return this.attempts.heartbeat(user.membershipId, id, user.sessionId);
+  }
+
+  @Get(':id/questions/:questionId/attachment-url')
+  getAttachmentUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+    @Param('questionId') questionId: string,
+  ) {
+    return this.attempts.getAttachmentUrl(user.membershipId, id, questionId);
   }
 
   @Post(':id/responses/:questionId/upload-url')
@@ -60,11 +74,11 @@ export class AttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: RequestUploadUrlDto,
   ) {
-    return this.attempts.getUploadUrl(user.membershipId, id, questionId, dto);
+    return this.attempts.getUploadUrl(user.membershipId, id, questionId, dto, user.sessionId);
   }
 
   @Post(':id/submit')
   submit(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
-    return this.attempts.submit(user.membershipId, id);
+    return this.attempts.submit(user.membershipId, id, user.sessionId);
   }
 }

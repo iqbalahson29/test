@@ -58,4 +58,19 @@ export class StorageService implements OnModuleInit {
     const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
     return getSignedUrl(this.s3, command, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
   }
+
+  /**
+   * Same as getDownloadUrl, but asks the browser to render the file inline
+   * rather than prompting a save dialog — used for view-only attachments.
+   * This is a UX nicety, not an access-control boundary: a presigned GET
+   * URL is fetchable by whoever holds it regardless of this header.
+   */
+  async getViewUrl(key: string, filename: string): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ResponseContentDisposition: `inline; filename="${filename.replace(/"/g, '')}"`,
+    });
+    return getSignedUrl(this.s3, command, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
+  }
 }

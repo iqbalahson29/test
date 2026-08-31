@@ -5,10 +5,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 
-async function login(app: INestApplication<App>, email: string) {
+async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
     .post('/auth/login')
-    .send({ email, password: 'password123' })
+    .send({ email, password })
     .expect(200);
   return res.body as { accessToken?: string };
 }
@@ -19,20 +19,21 @@ async function login(app: INestApplication<App>, email: string) {
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
   const superadmin = await login(app, 'superadmin@quiz-platform.test');
   const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
+  const password = 'Password123';
   const reqRes = await request(app.getHttpServer())
     .post('/tenant-requests')
     .send({
       workspaceName: `Beta ${label} ${Date.now()}`,
       requesterName: 'Beta Admin',
       requesterEmail: email,
-      password: 'password123',
+      password,
     })
     .expect(201);
   await request(app.getHttpServer())
     .post(`/tenant-requests/${reqRes.body.id}/approve`)
     .set('Authorization', `Bearer ${superadmin.accessToken}`)
     .expect(201);
-  const adminLogin = await login(app, email);
+  const adminLogin = await login(app, email, password);
   return { token: adminLogin.accessToken as string, email };
 }
 

@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { OptionInput } from '../types'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -98,8 +98,7 @@ export function OptionsEditor({
           ))}
         </div>
       )}
-      <Button type="button" variant="outline" size="sm" onClick={addOption}>
-        <Plus />
+      <Button type="button" className="w-36" onClick={addOption}>
         Add option
       </Button>
     </div>

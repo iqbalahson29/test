@@ -6,22 +6,35 @@ export interface AccessTokenPayload {
   tenantId: string;
   role: Role;
   type: 'access';
+  /** Identifies this login session, carried through unchanged across
+   * refreshes. Used to claim/verify an Attempt's session lock — see
+   * SESSION_LOCK_TIMEOUT_MS. */
+  sessionId: string;
+  /** Snapshot of User.tokenVersion at issuance. Only checked on refresh (not
+   * per-request) — an access token stays valid for its own short lifetime
+   * even after a password change; refresh() rejects it once that lifetime
+   * is up. */
+  tokenVersion: number;
 }
 
 export interface SuperAdminTokenPayload {
   sub: string;
   type: 'superadmin';
+  tokenVersion: number;
 }
 
 export interface RefreshTokenPayload {
   sub: string;
   membershipId: string;
   type: 'refresh';
+  sessionId: string;
+  tokenVersion: number;
 }
 
 export interface SuperAdminRefreshTokenPayload {
   sub: string;
   type: 'superadmin-refresh';
+  tokenVersion: number;
 }
 
 // Issued by login() when a user has multiple memberships, so the client can
@@ -45,11 +58,13 @@ export interface WorkspaceSelectionTokenPayload {
 export interface AccountTokenPayload {
   sub: string;
   type: 'account';
+  tokenVersion: number;
 }
 
 export interface AccountRefreshTokenPayload {
   sub: string;
   type: 'account-refresh';
+  tokenVersion: number;
 }
 
 export type AnyTokenPayload =

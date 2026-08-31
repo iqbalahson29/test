@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import type { Role } from '@quiz-platform/shared'
+import { ForbiddenPage } from '@/features/state-pages/forbidden-page'
 import { useAuth } from './auth-context'
 import { LoadingScreen } from './loading-screen'
-import { homePathForRole } from './types'
 
 export function ProtectedRoute({
   role,
@@ -24,7 +24,7 @@ export function ProtectedRoute({
     return <Navigate to="/login" replace />
   }
   if (membership.role !== role) {
-    return <Navigate to={homePathForRole(membership.role)} replace />
+    return <ForbiddenPage />
   }
   return <>{children}</>
 }

@@ -22,6 +22,28 @@ export class GradingController {
     return this.grading.gradingQueue(user.tenantId, quizId);
   }
 
+  @Post('quizzes/:quizId/questions/:questionId/regrade')
+  regradeQuestion(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('questionId') questionId: string,
+  ) {
+    return this.grading.regradeQuestion(
+      user.tenantId,
+      quizId,
+      questionId,
+      user.membershipId,
+    );
+  }
+
+  @Post('quizzes/:quizId/regrade')
+  regradeQuiz(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+  ) {
+    return this.grading.regradeQuiz(user.tenantId, quizId, user.membershipId);
+  }
+
   @Post('responses/:id/grade')
   gradeResponse(
     @CurrentUser() user: AccessTokenPayload,

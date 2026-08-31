@@ -1,13 +1,24 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
+@import "@fontsource/lato/300.css";
+@import "@fontsource/lato/400.css";
+@import "@fontsource/lato/700.css";
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Lato only ships static 300/400/700 faces (no 500/600) — medium and
+ * semibold collapse onto the 400 (Regular) face instead of synthesizing a
+ * fake in-between weight, which is what makes the overall UI read noticeably
+ * lighter than the old semibold-everywhere look. Bold text stays a real 700
+ * face so headings keep visible hierarchy.
+ */
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: 'Lato', sans-serif;
+    --font-weight-medium: 400;
+    --font-weight-semibold: 400;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -54,19 +65,19 @@
 }
 
 /*
- * Aubergine palette: primary-600 rgb(74 21 75) as brand color, primary-700
- * rgb(59 16 64) for hover, primary-50 rgb(246 236 246) for subtle
+ * Federal blue palette: primary-600 rgb(3 4 94) (#03045e) as brand color,
+ * primary-700 rgb(2 3 75) for hover, primary-50 rgb(242 242 247) for subtle
  * backgrounds. primary-100/400 are interpolated between 50 and 600 (not
  * separately specified). Neutrals are the standard Tailwind gray scale.
  * Every component below reads --primary etc. as variables, not literal
  * colors, so this one swap re-themes the whole set.
  */
 :root {
-    --primary-50: rgb(246 236 246);
-    --primary-100: rgb(232 219 232);
-    --primary-400: rgb(160 129 161);
-    --primary-600: rgb(74 21 75);
-    --primary-700: rgb(59 16 64);
+    --primary-50: rgb(242 242 247);
+    --primary-100: rgb(223 223 235);
+    --primary-400: rgb(123 123 171);
+    --primary-600: rgb(3 4 94);
+    --primary-700: rgb(2 3 75);
 
     --gray-50: rgb(249 250 251);
     --gray-100: rgb(243 244 246);

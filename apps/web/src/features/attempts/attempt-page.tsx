@@ -16,6 +16,8 @@ import { ApiError } from '../../lib/api-client'
 import { AnswerInputField } from './answer-input/answer-input-field'
 import { attemptsApi } from './api'
 import type { AttemptQuestion } from './types'
+import { useAntiLeakGuard } from './use-anti-leak-guard'
+import { DocumentViewer } from '@/components/document-viewer/document-viewer'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -23,6 +25,14 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { Pagination } from '@/components/ui/pagination'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 const AUTOSAVE_DEBOUNCE_MS = 600
 const PAGE_SIZE = 5
@@ -122,7 +132,11 @@ export function AttemptPage() {
   const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null)
   const [navFilter, setNavFilter] = useState<NavFilter>('current')
   const [markedIds, setMarkedIds] = useState<Set<string>>(new Set())
+  const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false)
+  const [sessionLostMessage, setSessionLostMessage] = useState<string | null>(null)
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  const obscured = useAntiLeakGuard(true)
 
   const seededAttemptId = useRef<string | null>(null)
   useEffect(() => {
@@ -147,6 +161,18 @@ export function AttemptPage() {
     }
   }, [attempt])
 
+  // A 403 from any attempt-mutating call means this attempt's session lock
+  // is now held by another device (or was force-released by a teacher) —
+  // surfaced as a blocking banner rather than a per-field error, since
+  // continuing to edit here would just be discarded.
+  const handlePossibleLockLoss = (err: unknown) => {
+    if (err instanceof ApiError && err.status === 403) {
+      setSessionLostMessage(err.message)
+      return true
+    }
+    return false
+  }
+
   const saveMutation = useMutation({
     mutationFn: ({
       questionId,
@@ -155,6 +181,7 @@ export function AttemptPage() {
       questionId: string
       data: { answer?: unknown; fileKey?: string }
     }) => attemptsApi.saveResponse(id!, questionId, data),
+    onError: handlePossibleLockLoss,
   })
 
   const submitMutation = useMutation({
@@ -163,10 +190,33 @@ export function AttemptPage() {
       queryClient.invalidateQueries({ queryKey: ['attempt', id] })
       queryClient.invalidateQueries({ queryKey: ['assignments-mine'] })
       setSubmitError(null)
+      setConfirmSubmitOpen(false)
     },
-    onError: (err: unknown) =>
-      setSubmitError(err instanceof ApiError ? err.message : 'Could not submit'),
+    onError: (err: unknown) => {
+      setConfirmSubmitOpen(false)
+      if (handlePossibleLockLoss(err)) return
+      setSubmitError(err instanceof ApiError ? err.message : 'Could not submit')
+    },
   })
+
+  // Periodically proves this tab/device is still the one taking the test —
+  // see SESSION_LOCK_TIMEOUT_MS on the API side. Stops once the attempt is
+  // no longer in progress or the lock is already known lost.
+  useEffect(() => {
+    if (!attempt || attempt.status !== 'IN_PROGRESS' || sessionLostMessage) return
+    const HEARTBEAT_INTERVAL_MS = 25_000
+    const attemptId = attempt.id
+    const tick = async () => {
+      try {
+        await attemptsApi.heartbeat(attemptId)
+      } catch (err) {
+        handlePossibleLockLoss(err)
+      }
+    }
+    const interval = setInterval(tick, HEARTBEAT_INTERVAL_MS)
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt?.id, attempt?.status, sessionLostMessage])
   const submitRef = useRef(submitMutation.mutate)
   submitRef.current = submitMutation.mutate
 
@@ -223,14 +273,7 @@ export function AttemptPage() {
   }
 
   const onSubmit = () => {
-    if (
-      !window.confirm(
-        'Submit this attempt? You will not be able to change your answers afterward.',
-      )
-    ) {
-      return
-    }
-    submitMutation.mutate()
+    setConfirmSubmitOpen(true)
   }
 
   const onJumpToQuestion = (questionId: string) => {
@@ -300,7 +343,7 @@ export function AttemptPage() {
     )
   }
 
-  const readOnly = attempt.status !== 'IN_PROGRESS'
+  const readOnly = attempt.status !== 'IN_PROGRESS' || !!sessionLostMessage
 
   const totalPoints = attempt.questions.reduce((sum, q) => sum + Number(q.points), 0)
   const uniformPoints =
@@ -332,6 +375,15 @@ export function AttemptPage() {
 
   return (
     <div className="w-full pb-16">
+      {obscured && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/95 text-center text-white backdrop-blur-sm">
+          <p className="max-w-xs text-sm font-medium">
+            Quiz content is hidden while this tab isn't in focus.
+            <br />
+            Return to this tab to keep working.
+          </p>
+        </div>
+      )}
       <Link
         to="/student"
         className="mb-3 inline-flex items-center gap-1.5 text-[13px] font-medium text-gray-500 hover:text-gray-800"
@@ -407,7 +459,14 @@ export function AttemptPage() {
             />
           </div>
 
-          {attempt.status === 'IN_PROGRESS' && (
+          {sessionLostMessage && (
+            <Alert variant="destructive">
+              <AlertDescription>
+                {sessionLostMessage} Reload the page and sign in again to keep answering here.
+              </AlertDescription>
+            </Alert>
+          )}
+          {attempt.status === 'IN_PROGRESS' && !sessionLostMessage && (
             <Alert>
               <Info />
               <AlertDescription>
@@ -450,7 +509,7 @@ export function AttemptPage() {
                         <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[12px] font-semibold text-gray-600">
                           {globalIndex + 1}
                         </span>
-                        <p className="text-[14.5px] font-medium text-gray-900">{q.prompt}</p>
+                        <p className="text-[14.5px] font-medium text-gray-900 select-none">{q.prompt}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <span className="text-[12.5px] whitespace-nowrap text-gray-400">
@@ -474,6 +533,13 @@ export function AttemptPage() {
                         )}
                       </div>
                     </div>
+                    {q.attachmentFilename && (
+                      <DocumentViewer
+                        mimeType={q.attachmentMimeType}
+                        filename={q.attachmentFilename}
+                        path={`/attempts/${attempt.id}/questions/${q.id}/attachment-url`}
+                      />
+                    )}
                     <AnswerInputField
                       question={q}
                       attemptId={attempt.id}
@@ -620,6 +686,48 @@ export function AttemptPage() {
           </Card>
         </aside>
       </div>
+
+      <Dialog open={confirmSubmitOpen} onOpenChange={setConfirmSubmitOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Submit this attempt?</DialogTitle>
+            <DialogDescription>
+              You will not be able to change your answers afterward.
+              {attempt.questions.length - answeredCount > 0 && (
+                <>
+                  {' '}
+                  You have {attempt.questions.length - answeredCount} unanswered question
+                  {attempt.questions.length - answeredCount === 1 ? '' : 's'}.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmSubmitOpen(false)}
+              disabled={submitMutation.isPending}
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              onClick={() => submitMutation.mutate()}
+              disabled={submitMutation.isPending}
+            >
+              {submitMutation.isPending ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                'Submit quiz'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

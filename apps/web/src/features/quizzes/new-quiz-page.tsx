@@ -41,12 +41,13 @@ export function NewQuizPage() {
   }
 
   return (
-    <div className="max-w-lg">
+    <div>
       <h1 className="mb-4 text-[17px] font-bold text-gray-900">New quiz</h1>
       <Card>
         <CardHeader>
           <p className="text-sm text-muted-foreground">
-            Set up the basics — you can add questions once the quiz is created.
+            Just the basics for now — once it's created, you'll land on the quiz page where you
+            can design and add questions whenever you're ready.
           </p>
         </CardHeader>
         <CardContent>

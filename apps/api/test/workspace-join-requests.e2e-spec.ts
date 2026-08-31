@@ -11,12 +11,18 @@ async function login(app: INestApplication<App>, email: string, password = 'pass
 
 async function registerAndLogin(app: INestApplication<App>, label: string) {
   const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
+  const password = 'Password123';
   await request(app.getHttpServer())
     .post('/auth/register')
-    .send({ email, name: 'Directory Student', password: 'password123' })
+    .send({ email, name: 'Directory Student', password })
     .expect(201);
-  const loginRes = await login(app, email);
-  return { email, accessToken: loginRes.body.accessToken as string };
+  const loginRes = await login(app, email, password);
+  return {
+    email,
+    password,
+    accessToken: loginRes.body.accessToken as string,
+    refreshCookie: loginRes.headers['set-cookie'] as unknown as string[],
+  };
 }
 
 describe('Workspace join requests + profile (e2e)', () => {
@@ -113,7 +119,7 @@ describe('Workspace join requests + profile (e2e)', () => {
       .expect(400);
 
     // The student now has a real membership -> login returns 'ok', not 'no-workspace'.
-    const secondLogin = await login(app, student.email);
+    const secondLogin = await login(app, student.email, student.password);
     expect(secondLogin.body.status).toBe('ok');
     expect(secondLogin.body.membership.role).toBe('STUDENT');
   });
@@ -146,7 +152,7 @@ describe('Workspace join requests + profile (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(201);
 
-    const stillNoWorkspace = await login(app, student.email);
+    const stillNoWorkspace = await login(app, student.email, student.password);
     expect(stillNoWorkspace.body.status).toBe('no-workspace');
   });
 
@@ -247,27 +253,42 @@ describe('Workspace join requests + profile (e2e)', () => {
     await request(app.getHttpServer())
       .patch('/auth/profile')
       .set('Authorization', `Bearer ${student.accessToken}`)
-      .send({ newPassword: 'newpassword123' })
+      .send({ newPassword: 'NewPassword123' })
       .expect(401);
 
     // Wrong currentPassword is rejected.
     await request(app.getHttpServer())
       .patch('/auth/profile')
       .set('Authorization', `Bearer ${student.accessToken}`)
-      .send({ newPassword: 'newpassword123', currentPassword: 'wrong-password' })
+      .send({ newPassword: 'NewPassword123', currentPassword: 'wrong-password' })
       .expect(401);
 
-    // Correct currentPassword succeeds, and the new password actually works.
+    // Weak newPassword (no uppercase) is rejected by the strength policy.
     await request(app.getHttpServer())
       .patch('/auth/profile')
       .set('Authorization', `Bearer ${student.accessToken}`)
-      .send({ newPassword: 'newpassword123', currentPassword: 'password123' })
-      .expect(200);
+      .send({ newPassword: 'weakpassword1', currentPassword: student.password })
+      .expect(400);
 
-    const oldPasswordLogin = await login(app, student.email, 'password123');
+    // Reusing the current password as the "new" one is rejected.
+    await request(app.getHttpServer())
+      .patch('/auth/profile')
+      .set('Authorization', `Bearer ${student.accessToken}`)
+      .send({ newPassword: student.password, currentPassword: student.password })
+      .expect(400);
+
+    // Correct currentPassword succeeds, and the new password actually works.
+    const changeRes = await request(app.getHttpServer())
+      .patch('/auth/profile')
+      .set('Authorization', `Bearer ${student.accessToken}`)
+      .send({ newPassword: 'NewPassword123', currentPassword: student.password })
+      .expect(200);
+    expect(changeRes.body.accessToken).toEqual(expect.any(String));
+
+    const oldPasswordLogin = await login(app, student.email, student.password);
     expect(oldPasswordLogin.status).toBe(401);
 
-    const newPasswordLogin = await login(app, student.email, 'newpassword123');
+    const newPasswordLogin = await login(app, student.email, 'NewPassword123');
     expect(newPasswordLogin.status).toBe(200);
 
     // GET /auth/profile reflects the rename.
@@ -276,5 +297,21 @@ describe('Workspace join requests + profile (e2e)', () => {
       .set('Authorization', `Bearer ${newPasswordLogin.body.accessToken}`)
       .expect(200);
     expect(profile.body.name).toBe('Renamed Again');
+
+    // The refresh token from *before* the password change is a stale
+    // session — its next refresh must be rejected, even though it hasn't
+    // expired yet.
+    await request(app.getHttpServer())
+      .post('/auth/refresh')
+      .set('Cookie', student.refreshCookie)
+      .expect(401);
+
+    // The tokens the PATCH itself just issued are for this same session —
+    // they must still work.
+    const newRefreshCookie = changeRes.headers['set-cookie'] as unknown as string[];
+    await request(app.getHttpServer())
+      .post('/auth/refresh')
+      .set('Cookie', newRefreshCookie)
+      .expect(200);
   });
 });

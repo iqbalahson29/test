@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { ConfigEditorProps } from './config-editor-props'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -47,9 +47,8 @@ export function ShortTextEditor({ config, onChange }: ConfigEditorProps) {
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={addAnswer}>
-        <Plus />
-        Add accepted answer
+      <Button type="button" className="w-36" onClick={addAnswer}>
+        Add answer
       </Button>
       <Label className="flex items-center gap-2 font-normal">
         <Checkbox

@@ -16,3 +16,8 @@ export interface GradeResponseInput {
   awardedPoints: number
   feedback?: string
 }
+
+export interface RegradeResult {
+  regradedResponses: number
+  affectedAttempts: number
+}
