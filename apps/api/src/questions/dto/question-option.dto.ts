@@ -15,4 +15,18 @@ export class QuestionOptionDto {
 
   @IsBoolean()
   isCorrect: boolean;
+
+  // Same tri-state convention as CreateQuestionDto's attachment/image fields:
+  // undefined = leave as-is, '' = clear, any other string = replace.
+  @IsOptional()
+  @IsString()
+  imageKey?: string;
+
+  @IsOptional()
+  @IsString()
+  imageFilename?: string;
+
+  @IsOptional()
+  @IsString()
+  imageMimeType?: string;
 }

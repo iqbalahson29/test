@@ -35,11 +35,35 @@ enum QuestionType {
   FILE_UPLOAD
 }
 
+enum QuestionDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+// Declared in play order — Postgres native enums sort by declaration
+// ordinal, so `orderBy: [{ module: 'asc' }, { order: 'asc' }]` queries rely
+// on this order to come back in actual SAT sequence.
+enum QuizModule {
+  RW_MODULE_1
+  RW_MODULE_2
+  MATH_MODULE_1
+  MATH_MODULE_2
+}
+
 enum QuizStatus {
   DRAFT
   SCHEDULED
   PUBLISHED
   ARCHIVED
+}
+
+// FIXED: the admin authors an exact question set every student sees.
+// BANK: the admin uploads a large tagged-difficulty pool and each attempt
+// draws its own random SAT-sized subset (see PracticeAttemptQuestion).
+enum PracticeQuizMode {
+  FIXED
+  BANK
 }
 
 enum AttemptStatus {
@@ -49,27 +73,27 @@ enum AttemptStatus {
 }
 
 model User {
-  id                    String                 @id @default(cuid())
-  email                 String                 @unique
-  passwordHash          String
+  id                     String                 @id @default(cuid())
+  email                  String                 @unique
+  passwordHash           String
   // Bumped whenever the password changes; embedded in every issued token and
   // checked on refresh — invalidates every other session's refresh token
   // (all other devices/tabs) the moment the password is changed, without a
   // token-revocation table. The session that made the change is re-issued
   // fresh tokens at the same call so only it survives.
-  tokenVersion          Int                    @default(0)
+  tokenVersion           Int                    @default(0)
   // Hashes of the last PASSWORD_HISTORY_LIMIT passwords (most recent first),
   // checked on change so a "new" password can't just be an old one again.
-  previousPasswordHashes String[]              @default([])
-  name                  String
-  isSuperAdmin          Boolean                @default(false)
-  isSuspended           Boolean                @default(false)
-  suspendedAt           DateTime?
-  lastLoginAt           DateTime?
-  memberships           Membership[]
-  workspaceJoinRequests WorkspaceJoinRequest[]
-  notifications         Notification[]
-  passwordResetTokens   PasswordResetToken[]
+  previousPasswordHashes String[]               @default([])
+  name                   String
+  isSuperAdmin           Boolean                @default(false)
+  isSuspended            Boolean                @default(false)
+  suspendedAt            DateTime?
+  lastLoginAt            DateTime?
+  memberships            Membership[]
+  workspaceJoinRequests  WorkspaceJoinRequest[]
+  notifications          Notification[]
+  passwordResetTokens    PasswordResetToken[]
 
   // Profile — most of these are only meaningful for STUDENT memberships
   // (gradeLevel, studentId, guardian*), but they live on User rather than a
@@ -94,18 +118,20 @@ model User {
 }
 
 model Tenant {
-  id                    String                 @id @default(cuid())
+  id                    String                   @id @default(cuid())
   name                  String
-  slug                  String                 @unique
+  slug                  String                   @unique
   description           String?
   bannerImageUrl        String?
-  joinCode              String?                @unique
-  status                TenantStatus           @default(ACTIVE)
+  joinCode              String?                  @unique
+  status                TenantStatus             @default(ACTIVE)
   suspendedAt           DateTime?
   memberships           Membership[]
   groups                Group[]
   quizzes               Quiz[]
   assignments           QuizAssignment[]
+  practiceQuizzes       PracticeQuiz[]
+  practiceAssignments   PracticeQuizAssignment[]
   tenantRequests        TenantRequest[]
   workspaceJoinRequests WorkspaceJoinRequest[]
   memberInvitations     MemberInvitation[]
@@ -135,6 +161,13 @@ model Membership {
   auditLogs           AuditLog[]
   sentInvitations     MemberInvitation[]
   notifications       Notification[]
+
+  createdPracticeQuizzes      PracticeQuiz[]           @relation("PracticeQuizCreatedBy")
+  practiceAssignmentsCreated  PracticeQuizAssignment[] @relation("PracticeAssignmentCreatedBy")
+  practiceAssignmentsReceived PracticeQuizAssignment[] @relation("PracticeAssignmentStudent")
+  practiceAttempts            PracticeAttempt[]
+  gradedPracticeResponses     PracticeResponse[]       @relation("PracticeResponseGradedBy")
+  practiceAuditLogs           PracticeAuditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -166,10 +199,10 @@ model TenantRequest {
 // which is a request to create a brand-new tenant, reviewed by the
 // platform super admin.
 model WorkspaceJoinRequest {
-  id         String              @id @default(cuid())
-  userId     String
-  tenantId   String
-  status     TenantRequestStatus @default(PENDING)
+  id       String              @id @default(cuid())
+  userId   String
+  tenantId String
+  status   TenantRequestStatus @default(PENDING)
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -208,12 +241,12 @@ model PasswordResetToken {
 }
 
 model MemberInvitation {
-  id                    String                  @id @default(cuid())
+  id                    String                 @id @default(cuid())
   tenantId              String
   email                 String
   role                  Role
-  token                 String                  @unique
-  status                MemberInvitationStatus  @default(PENDING)
+  token                 String                 @unique
+  status                MemberInvitationStatus @default(PENDING)
   invitedByMembershipId String?
 
   tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -230,9 +263,10 @@ model Group {
   tenantId String
   name     String
 
-  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  members     GroupMember[]
-  assignments QuizAssignment[]
+  tenant              Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members             GroupMember[]
+  assignments         QuizAssignment[]
+  practiceAssignments PracticeQuizAssignment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -252,19 +286,19 @@ model GroupMember {
 }
 
 model Quiz {
-  id                    String     @id @default(cuid())
-  tenantId              String
-  createdByMembershipId String
-  title                 String
-  description           String?
-  timeLimitSec          Int?
-  maxAttempts           Int?
-  shuffleQuestions      Boolean    @default(false)
-  shuffleOptions        Boolean    @default(false)
-  availableFrom         DateTime?
-  availableUntil        DateTime?
-  passMarkPercent       Decimal?   @db.Decimal(5, 2)
-  status                QuizStatus @default(DRAFT)
+  id                       String     @id @default(cuid())
+  tenantId                 String
+  createdByMembershipId    String
+  title                    String
+  description              String?
+  maxAttempts              Int?
+  shuffleQuestions         Boolean    @default(false)
+  shuffleOptions           Boolean    @default(false)
+  showDifficultyToStudents Boolean    @default(false)
+  availableFrom            DateTime?
+  availableUntil           DateTime?
+  passMarkPercent          Decimal?   @db.Decimal(5, 2)
+  status                   QuizStatus @default(DRAFT)
 
   tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy   Membership       @relation("QuizCreatedBy", fields: [createdByMembershipId], references: [id])
@@ -283,13 +317,17 @@ model Quiz {
 // pairs, blank definitions...) per packages/shared question-config schemas.
 // MCQ_SINGLE / MCQ_MULTI / TRUE_FALSE use QuestionOption instead.
 model Question {
-  id     String       @id @default(cuid())
-  quizId String
-  type   QuestionType
-  prompt String
-  points Decimal      @db.Decimal(6, 2)
-  order  Int
-  config Json         @default("{}")
+  id         String              @id @default(cuid())
+  quizId     String
+  module     QuizModule
+  type       QuestionType
+  prompt     String
+  points     Decimal             @db.Decimal(6, 2)
+  // Position within this question's module, not the whole quiz — order is
+  // scoped to (quizId, module) by the create/reorder/duplicate logic.
+  order      Int
+  config     Json                @default("{}")
+  difficulty QuestionDifficulty?
 
   // Optional reference document (PDF/DOCX) a teacher attaches for students
   // to view alongside the question — separate from `config` so it survives
@@ -297,6 +335,12 @@ model Question {
   attachmentKey      String?
   attachmentFilename String?
   attachmentMimeType String?
+
+  // Optional image shown inline with the question prompt — distinct from the
+  // reference-document attachment above.
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
 
   quiz      Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
   options   QuestionOption[]
@@ -314,6 +358,11 @@ model QuestionOption {
   text       String
   isCorrect  Boolean @default(false)
   order      Int
+
+  // Optional image shown inline with this answer option.
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
 
   question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
@@ -364,25 +413,47 @@ model Attempt {
   lockedAt        DateTime?
   lastHeartbeatAt DateTime?
 
-  quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  student   Membership @relation(fields: [studentMembershipId], references: [id], onDelete: Cascade)
+  quiz      Quiz                    @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student   Membership              @relation(fields: [studentMembershipId], references: [id], onDelete: Cascade)
   responses Response[]
+  modules   AttemptModuleProgress[]
 
   @@unique([quizId, studentMembershipId, attemptNumber])
   @@index([quizId])
   @@index([studentMembershipId])
 }
 
+// Tracks per-module timing/completion within one Attempt. A row's absence
+// of `submittedAt` marks it the currently-active module; the next module's
+// row is only created once the previous one is explicitly completed (see
+// AttemptsService.completeCurrentModule/beginNextModule), so there is at
+// most one "open" row per attempt at a time. This is what makes the fixed
+// 32/32/35/35-minute module timers server-enforced rather than merely
+// displayed to the client.
+model AttemptModuleProgress {
+  id            String     @id @default(cuid())
+  attemptId     String
+  module        QuizModule
+  startedAt     DateTime   @default(now())
+  submittedAt   DateTime?
+  autoSubmitted Boolean    @default(false)
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, module])
+  @@index([attemptId])
+}
+
 model Response {
-  id                    String   @id @default(cuid())
-  attemptId             String
-  questionId            String
-  answer                Json?
-  fileKey               String?
-  awardedPoints         Decimal? @db.Decimal(6, 2)
-  autoGraded            Boolean  @default(false)
-  gradedByMembershipId  String?
-  feedback              String?
+  id                   String   @id @default(cuid())
+  attemptId            String
+  questionId           String
+  answer               Json?
+  fileKey              String?
+  awardedPoints        Decimal? @db.Decimal(6, 2)
+  autoGraded           Boolean  @default(false)
+  gradedByMembershipId String?
+  feedback             String?
 
   attempt  Attempt     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   question Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
@@ -416,6 +487,273 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([quizId])
+  @@index([tenantId])
+}
+
+// Practice Quiz is a fully independent copy of the Quiz feature (own tables,
+// own services/controllers) so bug fixes or behavior changes on one never
+// affect the other. Field-for-field mirror of Quiz/Question/QuestionOption/
+// QuizAssignment/Attempt/AttemptModuleProgress/Response/AuditLog above.
+
+model PracticeQuiz {
+  id                       String     @id @default(cuid())
+  tenantId                 String
+  createdByMembershipId    String
+  title                    String
+  description              String?
+  maxAttempts              Int?
+  shuffleQuestions         Boolean    @default(false)
+  shuffleOptions           Boolean    @default(false)
+  showDifficultyToStudents Boolean    @default(false)
+  availableFrom            DateTime?
+  availableUntil           DateTime?
+  passMarkPercent          Decimal?   @db.Decimal(5, 2)
+  status                   QuizStatus @default(DRAFT)
+
+  // Set at creation, immutable after — see PracticeQuizMode. bankModuleTargets
+  // is Record<QuizModule, number>; bankDifficultyRatio is
+  // {EASY,MEDIUM,HARD} percentages summing to 100. Both null for FIXED mode.
+  mode                PracticeQuizMode @default(FIXED)
+  bankModuleTargets   Json?
+  bankDifficultyRatio Json?
+
+  tenant      Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   Membership               @relation("PracticeQuizCreatedBy", fields: [createdByMembershipId], references: [id])
+  questions   PracticeQuestion[]
+  assignments PracticeQuizAssignment[]
+  attempts    PracticeAttempt[]
+  auditLogs   PracticeAuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model PracticeQuestion {
+  id         String              @id @default(cuid())
+  quizId     String
+  module     QuizModule
+  type       QuestionType
+  prompt     String
+  points     Decimal             @db.Decimal(6, 2)
+  order      Int
+  config     Json                @default("{}")
+  difficulty QuestionDifficulty?
+
+  attachmentKey      String?
+  attachmentFilename String?
+  attachmentMimeType String?
+
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
+
+  quiz      PracticeQuiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  options   PracticeQuestionOption[]
+  responses PracticeResponse[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([quizId])
+}
+
+model PracticeQuestionOption {
+  id         String  @id @default(cuid())
+  questionId String
+  text       String
+  isCorrect  Boolean @default(false)
+  order      Int
+
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
+
+  question PracticeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// Exactly one of studentMembershipId / groupId is set.
+model PracticeQuizAssignment {
+  id                     String    @id @default(cuid())
+  tenantId               String
+  quizId                 String
+  studentMembershipId    String?
+  groupId                String?
+  assignedByMembershipId String
+  dueAt                  DateTime?
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quiz       PracticeQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student    Membership?  @relation("PracticeAssignmentStudent", fields: [studentMembershipId], references: [id], onDelete: Cascade)
+  group      Group?       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  assignedBy Membership   @relation("PracticeAssignmentCreatedBy", fields: [assignedByMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([quizId])
+}
+
+model PracticeAttempt {
+  id                  String        @id @default(cuid())
+  quizId              String
+  studentMembershipId String
+  attemptNumber       Int
+  status              AttemptStatus @default(IN_PROGRESS)
+  startedAt           DateTime      @default(now())
+  submittedAt         DateTime?
+  score               Decimal?      @db.Decimal(7, 2)
+  maxScore            Decimal?      @db.Decimal(7, 2)
+
+  // Single-active-session lock — see Attempt.lockSessionId above for the
+  // full mechanics; identical here.
+  lockSessionId   String?
+  lockedAt        DateTime?
+  lastHeartbeatAt DateTime?
+
+  quiz      PracticeQuiz                    @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student   Membership                      @relation(fields: [studentMembershipId], references: [id], onDelete: Cascade)
+  responses PracticeResponse[]
+  modules   PracticeAttemptModuleProgress[]
+
+  // BANK-mode only — see PracticeAttemptQuestion.
+  attemptQuestions PracticeAttemptQuestion[]
+  attemptResponses PracticeAttemptResponse[]
+
+  @@unique([quizId, studentMembershipId, attemptNumber])
+  @@index([quizId])
+  @@index([studentMembershipId])
+}
+
+// See AttemptModuleProgress above — identical per-module timing/completion
+// tracking, mirrored for PracticeAttempt.
+model PracticeAttemptModuleProgress {
+  id            String     @id @default(cuid())
+  attemptId     String
+  module        QuizModule
+  startedAt     DateTime   @default(now())
+  submittedAt   DateTime?
+  autoSubmitted Boolean    @default(false)
+
+  attempt PracticeAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, module])
+  @@index([attemptId])
+}
+
+// One row per question actually drawn into a BANK-mode attempt — a frozen
+// content copy, field-for-field mirroring PracticeQuestion, so review stays
+// correct forever even after the admin edits or deletes the source bank
+// question. `sourceQuestionId` is provenance only (no FK, no cascade) —
+// deleting the live bank question must never touch an attempt's snapshot.
+model PracticeAttemptQuestion {
+  id         String              @id @default(cuid())
+  attemptId  String
+  module     QuizModule
+  type       QuestionType
+  prompt     String
+  points     Decimal             @db.Decimal(6, 2)
+  order      Int
+  config     Json                @default("{}")
+  difficulty QuestionDifficulty?
+
+  attachmentKey      String?
+  attachmentFilename String?
+  attachmentMimeType String?
+
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
+
+  sourceQuestionId String?
+
+  attempt  PracticeAttempt                 @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  options  PracticeAttemptQuestionOption[]
+  response PracticeAttemptResponse?
+
+  createdAt DateTime @default(now())
+
+  @@index([attemptId])
+}
+
+model PracticeAttemptQuestionOption {
+  id                String  @id @default(cuid())
+  attemptQuestionId String
+  text              String
+  isCorrect         Boolean @default(false)
+  order             Int
+
+  imageKey      String?
+  imageFilename String?
+  imageMimeType String?
+
+  attemptQuestion PracticeAttemptQuestion @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+
+  @@index([attemptQuestionId])
+}
+
+// BANK-mode equivalent of PracticeResponse — simpler because every bank
+// question is auto-gradable by construction (ESSAY/FILE_UPLOAD are blocked
+// at question-create time for BANK-mode quizzes), so there's no manual
+// grading state (no fileKey/gradedByMembershipId/feedback) and no pending
+// status — a bank attempt goes straight from SUBMITTED to GRADED.
+model PracticeAttemptResponse {
+  id                String   @id @default(cuid())
+  attemptId         String
+  attemptQuestionId String   @unique
+  answer            Json?
+  awardedPoints     Decimal? @db.Decimal(6, 2)
+
+  attempt         PracticeAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attemptQuestion PracticeAttemptQuestion @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([attemptId])
+}
+
+model PracticeResponse {
+  id                   String   @id @default(cuid())
+  attemptId            String
+  questionId           String
+  answer               Json?
+  fileKey              String?
+  awardedPoints        Decimal? @db.Decimal(6, 2)
+  autoGraded           Boolean  @default(false)
+  gradedByMembershipId String?
+  feedback             String?
+
+  attempt  PracticeAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question PracticeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  gradedBy Membership?      @relation("PracticeResponseGradedBy", fields: [gradedByMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+}
+
+// See AuditLog above — identical activity-log pattern, kept as a fully
+// separate table so it never mixes with regular-quiz activity.
+model PracticeAuditLog {
+  id                String  @id @default(cuid())
+  tenantId          String
+  practiceQuizId    String?
+  actorMembershipId String?
+  action            String
+  detail            String?
+
+  practiceQuiz PracticeQuiz? @relation(fields: [practiceQuizId], references: [id], onDelete: Cascade)
+  actor        Membership?   @relation(fields: [actorMembershipId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([practiceQuizId])
   @@index([tenantId])
 }
 

@@ -20,12 +20,22 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/index.ts
 var index_exports = {};
 __export(index_exports, {
+  ALL_QUESTION_DIFFICULTIES: () => ALL_QUESTION_DIFFICULTIES,
   ALL_QUESTION_TYPES: () => ALL_QUESTION_TYPES,
+  ALL_QUIZ_MODULES: () => ALL_QUIZ_MODULES,
   ALL_ROLES: () => ALL_ROLES,
   AUTO_GRADABLE_TYPES: () => AUTO_GRADABLE_TYPES,
   OPTION_BASED_TYPES: () => OPTION_BASED_TYPES,
+  QUIZ_MODULE_LABELS: () => QUIZ_MODULE_LABELS,
+  QUIZ_MODULE_SEQUENCE: () => QUIZ_MODULE_SEQUENCE,
+  QUIZ_MODULE_SHORT_LABELS: () => QUIZ_MODULE_SHORT_LABELS,
+  QUIZ_MODULE_SUBJECT: () => QUIZ_MODULE_SUBJECT,
+  QUIZ_MODULE_TIME_LIMIT_SEC: () => QUIZ_MODULE_TIME_LIMIT_SEC,
+  QuestionDifficulty: () => QuestionDifficulty,
   QuestionType: () => QuestionType,
+  QuizModule: () => QuizModule,
   Role: () => Role,
+  TOTAL_QUIZ_TIME_LIMIT_SEC: () => TOTAL_QUIZ_TIME_LIMIT_SEC,
   answerSchemaByType: () => answerSchemaByType,
   essayAnswerSchema: () => essayAnswerSchema,
   essayConfigSchema: () => essayConfigSchema,
@@ -35,12 +45,14 @@ __export(index_exports, {
   fillBlankConfigSchema: () => fillBlankConfigSchema,
   getAnswerSchema: () => getAnswerSchema,
   getQuestionConfigSchema: () => getQuestionConfigSchema,
+  isSubjectBoundary: () => isSubjectBoundary,
   matchingAnswerSchema: () => matchingAnswerSchema,
   matchingConfigSchema: () => matchingConfigSchema,
   mcqMultiAnswerSchema: () => mcqMultiAnswerSchema,
   mcqMultiConfigSchema: () => mcqMultiConfigSchema,
   mcqSingleAnswerSchema: () => mcqSingleAnswerSchema,
   mcqSingleConfigSchema: () => mcqSingleConfigSchema,
+  moduleAllowsCalculator: () => moduleAllowsCalculator,
   numericAnswerSchema: () => numericAnswerSchema,
   numericConfigSchema: () => numericConfigSchema,
   questionConfigSchemaByType: () => questionConfigSchemaByType,
@@ -86,6 +98,12 @@ var OPTION_BASED_TYPES = [
   QuestionType.MCQ_MULTI,
   QuestionType.TRUE_FALSE
 ];
+var QuestionDifficulty = {
+  EASY: "EASY",
+  MEDIUM: "MEDIUM",
+  HARD: "HARD"
+};
+var ALL_QUESTION_DIFFICULTIES = Object.values(QuestionDifficulty);
 
 // src/question-config.schemas.ts
 var import_zod = require("zod");
@@ -190,14 +208,73 @@ var answerSchemaByType = {
 function getAnswerSchema(type) {
   return answerSchemaByType[type];
 }
+
+// src/quiz-module.ts
+var QuizModule = {
+  RW_MODULE_1: "RW_MODULE_1",
+  RW_MODULE_2: "RW_MODULE_2",
+  MATH_MODULE_1: "MATH_MODULE_1",
+  MATH_MODULE_2: "MATH_MODULE_2"
+};
+var QUIZ_MODULE_SEQUENCE = [
+  QuizModule.RW_MODULE_1,
+  QuizModule.RW_MODULE_2,
+  QuizModule.MATH_MODULE_1,
+  QuizModule.MATH_MODULE_2
+];
+var ALL_QUIZ_MODULES = QUIZ_MODULE_SEQUENCE;
+var QUIZ_MODULE_SUBJECT = {
+  [QuizModule.RW_MODULE_1]: "RW",
+  [QuizModule.RW_MODULE_2]: "RW",
+  [QuizModule.MATH_MODULE_1]: "MATH",
+  [QuizModule.MATH_MODULE_2]: "MATH"
+};
+var QUIZ_MODULE_TIME_LIMIT_SEC = {
+  [QuizModule.RW_MODULE_1]: 32 * 60,
+  [QuizModule.RW_MODULE_2]: 32 * 60,
+  [QuizModule.MATH_MODULE_1]: 35 * 60,
+  [QuizModule.MATH_MODULE_2]: 35 * 60
+};
+var QUIZ_MODULE_LABELS = {
+  [QuizModule.RW_MODULE_1]: "Reading & Writing \u2014 Module 1",
+  [QuizModule.RW_MODULE_2]: "Reading & Writing \u2014 Module 2",
+  [QuizModule.MATH_MODULE_1]: "Math \u2014 Module 1",
+  [QuizModule.MATH_MODULE_2]: "Math \u2014 Module 2"
+};
+var QUIZ_MODULE_SHORT_LABELS = {
+  [QuizModule.RW_MODULE_1]: "R&W Module 1",
+  [QuizModule.RW_MODULE_2]: "R&W Module 2",
+  [QuizModule.MATH_MODULE_1]: "Math Module 1",
+  [QuizModule.MATH_MODULE_2]: "Math Module 2"
+};
+function moduleAllowsCalculator(module2) {
+  return QUIZ_MODULE_SUBJECT[module2] === "MATH";
+}
+function isSubjectBoundary(from, to) {
+  return QUIZ_MODULE_SUBJECT[from] !== QUIZ_MODULE_SUBJECT[to];
+}
+var TOTAL_QUIZ_TIME_LIMIT_SEC = QUIZ_MODULE_SEQUENCE.reduce(
+  (sum, m) => sum + QUIZ_MODULE_TIME_LIMIT_SEC[m],
+  0
+);
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  ALL_QUESTION_DIFFICULTIES,
   ALL_QUESTION_TYPES,
+  ALL_QUIZ_MODULES,
   ALL_ROLES,
   AUTO_GRADABLE_TYPES,
   OPTION_BASED_TYPES,
+  QUIZ_MODULE_LABELS,
+  QUIZ_MODULE_SEQUENCE,
+  QUIZ_MODULE_SHORT_LABELS,
+  QUIZ_MODULE_SUBJECT,
+  QUIZ_MODULE_TIME_LIMIT_SEC,
+  QuestionDifficulty,
   QuestionType,
+  QuizModule,
   Role,
+  TOTAL_QUIZ_TIME_LIMIT_SEC,
   answerSchemaByType,
   essayAnswerSchema,
   essayConfigSchema,
@@ -207,12 +284,14 @@ function getAnswerSchema(type) {
   fillBlankConfigSchema,
   getAnswerSchema,
   getQuestionConfigSchema,
+  isSubjectBoundary,
   matchingAnswerSchema,
   matchingConfigSchema,
   mcqMultiAnswerSchema,
   mcqMultiConfigSchema,
   mcqSingleAnswerSchema,
   mcqSingleConfigSchema,
+  moduleAllowsCalculator,
   numericAnswerSchema,
   numericConfigSchema,
   questionConfigSchemaByType,

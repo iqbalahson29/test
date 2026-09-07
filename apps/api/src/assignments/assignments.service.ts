@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, QuizStatus, Role } from '@prisma/client';
+import { TOTAL_QUIZ_TIME_LIMIT_SEC } from '@quiz-platform/shared';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { MembershipsService } from '../memberships/memberships.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -399,7 +400,7 @@ export class AssignmentsService {
         quizId: a.quizId,
         quizTitle: a.quiz.title,
         dueAt: a.dueAt,
-        timeLimitSec: a.quiz.timeLimitSec,
+        timeLimitSec: TOTAL_QUIZ_TIME_LIMIT_SEC,
         maxAttempts: a.quiz.maxAttempts,
         attemptsUsed,
         status: current?.status ?? 'NOT_STARTED',

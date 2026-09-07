@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  Calculator as CalculatorIcon,
+  ChevronDown,
   Clock,
   Flag,
   HelpCircle,
@@ -12,18 +14,29 @@ import {
   RefreshCw,
   Star,
 } from 'lucide-react'
+import {
+  QUIZ_MODULE_SEQUENCE,
+  QUIZ_MODULE_LABELS,
+  QUIZ_MODULE_TIME_LIMIT_SEC,
+  moduleAllowsCalculator,
+  isSubjectBoundary,
+} from '@quiz-platform/shared'
 import { ApiError } from '../../lib/api-client'
 import { AnswerInputField } from './answer-input/answer-input-field'
 import { attemptsApi } from './api'
+import { Calculator } from './calculator'
 import type { AttemptQuestion } from './types'
 import { useAntiLeakGuard } from './use-anti-leak-guard'
+import { DifficultyBadge } from '@/components/difficulty-badge'
 import { DocumentViewer } from '@/components/document-viewer/document-viewer'
+import { MathText } from '@/components/math/math-text'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { CircularProgress } from '@/components/ui/circular-progress'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Pagination } from '@/components/ui/pagination'
 import {
   Dialog,
@@ -133,6 +146,7 @@ export function AttemptPage() {
   const [navFilter, setNavFilter] = useState<NavFilter>('current')
   const [markedIds, setMarkedIds] = useState<Set<string>>(new Set())
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false)
+  const [calculatorOpen, setCalculatorOpen] = useState(false)
   const [sessionLostMessage, setSessionLostMessage] = useState<string | null>(null)
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
@@ -184,10 +198,10 @@ export function AttemptPage() {
     onError: handlePossibleLockLoss,
   })
 
-  const submitMutation = useMutation({
-    mutationFn: () => attemptsApi.submit(id!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['attempt', id] })
+  const completeModuleMutation = useMutation({
+    mutationFn: () => attemptsApi.completeCurrentModule(id!),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['attempt', id], updated)
       queryClient.invalidateQueries({ queryKey: ['assignments-mine'] })
       setSubmitError(null)
       setConfirmSubmitOpen(false)
@@ -196,6 +210,18 @@ export function AttemptPage() {
       setConfirmSubmitOpen(false)
       if (handlePossibleLockLoss(err)) return
       setSubmitError(err instanceof ApiError ? err.message : 'Could not submit')
+    },
+  })
+
+  const beginNextModuleMutation = useMutation({
+    mutationFn: () => attemptsApi.beginNextModule(id!),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['attempt', id], updated)
+      setSubmitError(null)
+    },
+    onError: (err: unknown) => {
+      if (handlePossibleLockLoss(err)) return
+      setSubmitError(err instanceof ApiError ? err.message : 'Could not start the next module')
     },
   })
 
@@ -217,8 +243,8 @@ export function AttemptPage() {
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt?.id, attempt?.status, sessionLostMessage])
-  const submitRef = useRef(submitMutation.mutate)
-  submitRef.current = submitMutation.mutate
+  const completeModuleRef = useRef(completeModuleMutation.mutate)
+  completeModuleRef.current = completeModuleMutation.mutate
 
   const onAnswerChange = (questionId: string, answer: unknown) => {
     setAnswers((prev) => ({ ...prev, [questionId]: answer }))
@@ -297,27 +323,47 @@ export function AttemptPage() {
     if (first) setActiveQuestionId(first.id)
   }
 
-  // Countdown timer — client-side only, auto-submits at zero (see Phase 3
-  // plan: no server-side time-limit enforcement yet).
+  // Countdown timer for the active module — the deadline is an absolute
+  // server timestamp (moduleDeadlineAt), enforced server-side too (see
+  // AttemptsService.enforceModuleDeadline), so this is a display + UX nicety
+  // rather than the sole enforcement.
   useEffect(() => {
-    if (!attempt || !attempt.timeLimitSec || attempt.status !== 'IN_PROGRESS') {
+    if (!attempt || !attempt.moduleDeadlineAt || attempt.status !== 'IN_PROGRESS') {
       setRemainingSec(null)
       return
     }
-    const deadline = new Date(attempt.startedAt).getTime() + attempt.timeLimitSec * 1000
+    const deadline = new Date(attempt.moduleDeadlineAt).getTime()
     let autoSubmitted = false
     const tick = () => {
       const remaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000))
       setRemainingSec(remaining)
       if (remaining <= 0 && !autoSubmitted) {
         autoSubmitted = true
-        submitRef.current()
+        completeModuleRef.current()
       }
     }
     tick()
     const interval = setInterval(tick, 1000)
     return () => clearInterval(interval)
-  }, [attempt?.id, attempt?.status, attempt?.timeLimitSec, attempt?.startedAt, attempt])
+  }, [attempt?.id, attempt?.status, attempt?.moduleDeadlineAt])
+
+  // Between modules, same-subject transitions (e.g. R&W Module 1 -> Module
+  // 2) advance immediately with no visible break; only the R&W->Math
+  // boundary shows a break screen requiring an explicit "Continue" click
+  // (rendered below, via the isBreakBoundary check).
+  const autoAdvancedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!attempt || attempt.status !== 'IN_PROGRESS' || attempt.currentModule) return
+    const nextModule = QUIZ_MODULE_SEQUENCE.find((m) => !attempt.completedModules.includes(m))
+    if (!nextModule) return
+    const lastCompleted = attempt.completedModules[attempt.completedModules.length - 1]
+    const isBreakBoundary = lastCompleted && isSubjectBoundary(lastCompleted, nextModule)
+    if (isBreakBoundary) return
+    if (autoAdvancedRef.current === attempt.id + nextModule) return
+    autoAdvancedRef.current = attempt.id + nextModule
+    beginNextModuleMutation.mutate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt?.id, attempt?.status, attempt?.currentModule, attempt?.completedModules])
 
   // Time spent — ticks live while in progress, freezes at submission time.
   useEffect(() => {
@@ -344,6 +390,7 @@ export function AttemptPage() {
   }
 
   const readOnly = attempt.status !== 'IN_PROGRESS' || !!sessionLostMessage
+  const betweenModules = attempt.status === 'IN_PROGRESS' && !attempt.currentModule
 
   const totalPoints = attempt.questions.reduce((sum, q) => sum + Number(q.points), 0)
   const uniformPoints =
@@ -369,9 +416,20 @@ export function AttemptPage() {
   const pageStart = (boundedPage - 1) * PAGE_SIZE
   const pageQuestions = attempt.questions.slice(pageStart, pageStart + PAGE_SIZE)
 
-  const timeLimitValue = attempt.timeLimitSec
-    ? `${Math.round(attempt.timeLimitSec / 60)} min`
+  const timeLimitValue = attempt.currentModule
+    ? `${Math.round(QUIZ_MODULE_TIME_LIMIT_SEC[attempt.currentModule] / 60)} min`
     : 'Untimed'
+
+  const nextModule = QUIZ_MODULE_SEQUENCE.find((m) => !attempt.completedModules.includes(m))
+  const lastCompletedModule = attempt.completedModules[attempt.completedModules.length - 1]
+  const isBreakBoundary =
+    attempt.status === 'IN_PROGRESS' &&
+    !attempt.currentModule &&
+    !!nextModule &&
+    !!lastCompletedModule &&
+    isSubjectBoundary(lastCompletedModule, nextModule)
+  const isLastModule = attempt.currentModule === QUIZ_MODULE_SEQUENCE[QUIZ_MODULE_SEQUENCE.length - 1]
+  const calculatorAllowed = !!attempt.currentModule && moduleAllowsCalculator(attempt.currentModule)
 
   return (
     <div className="w-full pb-16">
@@ -399,6 +457,8 @@ export function AttemptPage() {
               <h1 className="text-[17px] font-bold text-gray-900">{attempt.quizTitle}</h1>
               <p className="text-sm text-muted-foreground">
                 Attempt #{attempt.attemptNumber}
+                {attempt.currentModule && ` · ${QUIZ_MODULE_LABELS[attempt.currentModule]}`}
+                {betweenModules && ' · Between modules'}
                 {attempt.status === 'SUBMITTED' && ' · Submitted, awaiting grading'}
                 {attempt.status === 'GRADED' && (
                   <span className="font-medium text-emerald-700">
@@ -423,15 +483,17 @@ export function AttemptPage() {
                   {formatTime(remainingSec)}
                 </Badge>
               )}
-              {!readOnly && (
-                <Button type="button" onClick={onSubmit} disabled={submitMutation.isPending}>
-                  {submitMutation.isPending ? (
+              {!readOnly && !betweenModules && (
+                <Button type="button" onClick={onSubmit} disabled={completeModuleMutation.isPending}>
+                  {completeModuleMutation.isPending ? (
                     <>
                       <Loader2 className="animate-spin" />
                       Submitting…
                     </>
-                  ) : (
+                  ) : isLastModule ? (
                     'Submit quiz'
+                  ) : (
+                    'Submit module'
                   )}
                 </Button>
               )}
@@ -439,7 +501,7 @@ export function AttemptPage() {
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatTile icon={Clock} label="Time limit" value={timeLimitValue} caption={attempt.timeLimitSec ? undefined : 'No time limit'} />
+            <StatTile icon={Clock} label="Time limit" value={timeLimitValue} caption={attempt.currentModule ? undefined : 'No time limit'} />
             <StatTile icon={ListChecks} label="Total questions" value={String(attempt.questions.length)} />
             <StatTile
               icon={Star}
@@ -466,7 +528,7 @@ export function AttemptPage() {
               </AlertDescription>
             </Alert>
           )}
-          {attempt.status === 'IN_PROGRESS' && !sessionLostMessage && (
+          {attempt.status === 'IN_PROGRESS' && !betweenModules && !sessionLostMessage && (
             <Alert>
               <Info />
               <AlertDescription>
@@ -497,6 +559,44 @@ export function AttemptPage() {
             </Alert>
           )}
 
+          {betweenModules && (
+            <Card className="border-primary/20 bg-primary/5">
+              <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+                {isBreakBoundary ? (
+                  <>
+                    <p className="text-lg font-bold text-gray-900">Take a break</p>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      You've finished the Reading &amp; Writing section. Take a short break, then
+                      continue whenever you're ready — {nextModule && QUIZ_MODULE_LABELS[nextModule]}{' '}
+                      starts once you click continue.
+                    </p>
+                    <Button
+                      type="button"
+                      onClick={() => beginNextModuleMutation.mutate()}
+                      disabled={beginNextModuleMutation.isPending}
+                    >
+                      {beginNextModuleMutation.isPending ? (
+                        <>
+                          <Loader2 className="animate-spin" />
+                          Starting…
+                        </>
+                      ) : (
+                        `Continue to ${nextModule ? QUIZ_MODULE_LABELS[nextModule] : 'next module'}`
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Moving on to the next module…</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {!betweenModules && (
+          <>
           <div className="space-y-4">
             {pageQuestions.map((q) => {
               const globalIndex = attempt.questions.findIndex((x) => x.id === q.id)
@@ -509,7 +609,19 @@ export function AttemptPage() {
                         <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[12px] font-semibold text-gray-600">
                           {globalIndex + 1}
                         </span>
-                        <p className="text-[14.5px] font-medium text-gray-900 select-none">{q.prompt}</p>
+                        <div>
+                          {q.difficulty && (
+                            <DifficultyBadge difficulty={q.difficulty} />
+                          )}
+                          <p
+                            className={cn(
+                              'text-[14.5px] font-medium text-gray-900 select-none',
+                              q.difficulty && 'mt-1',
+                            )}
+                          >
+                            <MathText text={q.prompt} />
+                          </p>
+                        </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <span className="text-[12.5px] whitespace-nowrap text-gray-400">
@@ -540,6 +652,13 @@ export function AttemptPage() {
                         path={`/attempts/${attempt.id}/questions/${q.id}/attachment-url`}
                       />
                     )}
+                    {q.imageFilename && (
+                      <DocumentViewer
+                        mimeType={q.imageMimeType}
+                        filename={q.imageFilename}
+                        path={`/attempts/${attempt.id}/questions/${q.id}/image-url`}
+                      />
+                    )}
                     <AnswerInputField
                       question={q}
                       attemptId={attempt.id}
@@ -563,7 +682,8 @@ export function AttemptPage() {
                     )}
                     {q.feedback && (
                       <div className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
-                        <span className="font-medium text-foreground">Feedback:</span> {q.feedback}
+                        <span className="font-medium text-foreground">Feedback:</span>{' '}
+                        <MathText text={q.feedback} />
                       </div>
                     )}
                   </CardContent>
@@ -579,9 +699,33 @@ export function AttemptPage() {
             </p>
             <Pagination page={boundedPage} totalPages={totalPages} onPageChange={onPageChange} />
           </div>
+          </>
+          )}
         </div>
 
+        {!betweenModules && (
         <aside className="w-full space-y-4 xl:w-80 xl:shrink-0">
+          {calculatorAllowed && (
+            <Card>
+              <CardContent>
+                <Collapsible open={calculatorOpen} onOpenChange={setCalculatorOpen}>
+                  <CollapsibleTrigger className="flex w-full items-center justify-between">
+                    <span className="flex items-center gap-2 text-[13px] font-bold text-gray-800">
+                      <CalculatorIcon className="size-4 text-gray-400" />
+                      Calculator
+                    </span>
+                    <ChevronDown
+                      className={cn('size-4 text-gray-400 transition-transform', calculatorOpen && 'rotate-180')}
+                    />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="pt-3">
+                    <Calculator />
+                  </CollapsibleContent>
+                </Collapsible>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardContent className="flex flex-col items-center gap-4">
               <p className="self-start text-[13px] font-bold text-gray-800">Your progress</p>
@@ -685,14 +829,17 @@ export function AttemptPage() {
             </CardContent>
           </Card>
         </aside>
+        )}
       </div>
 
       <Dialog open={confirmSubmitOpen} onOpenChange={setConfirmSubmitOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Submit this attempt?</DialogTitle>
+            <DialogTitle>{isLastModule ? 'Submit this attempt?' : 'Submit this module?'}</DialogTitle>
             <DialogDescription>
-              You will not be able to change your answers afterward.
+              {isLastModule
+                ? 'You will not be able to change your answers afterward.'
+                : "You won't be able to return to this module once you continue."}
               {attempt.questions.length - answeredCount > 0 && (
                 <>
                   {' '}
@@ -707,22 +854,24 @@ export function AttemptPage() {
               type="button"
               variant="outline"
               onClick={() => setConfirmSubmitOpen(false)}
-              disabled={submitMutation.isPending}
+              disabled={completeModuleMutation.isPending}
             >
               Back
             </Button>
             <Button
               type="button"
-              onClick={() => submitMutation.mutate()}
-              disabled={submitMutation.isPending}
+              onClick={() => completeModuleMutation.mutate()}
+              disabled={completeModuleMutation.isPending}
             >
-              {submitMutation.isPending ? (
+              {completeModuleMutation.isPending ? (
                 <>
                   <Loader2 className="animate-spin" />
                   Submitting…
                 </>
-              ) : (
+              ) : isLastModule ? (
                 'Submit quiz'
+              ) : (
+                'Submit module'
               )}
             </Button>
           </DialogFooter>

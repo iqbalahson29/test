@@ -1,0 +1,134 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { Role } from '@prisma/client';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
+import type { AccessTokenPayload } from '../auth/token.types';
+import { CreatePracticeQuestionDto } from './dto/create-practice-question.dto';
+import { ImportPracticeQuestionsDto } from './dto/import-practice-questions.dto';
+import { RequestPracticeAttachmentUploadUrlDto } from './dto/request-practice-attachment-upload-url.dto';
+import { ReorderPracticeQuestionsDto } from './dto/reorder-practice-questions.dto';
+import { UpdatePracticeQuestionDto } from './dto/update-practice-question.dto';
+import { PracticeQuestionsService } from './questions.service';
+
+@Controller('practice-quizzes/:quizId/questions')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.ADMIN)
+export class PracticeQuestionsController {
+  constructor(private readonly questions: PracticeQuestionsService) {}
+
+  @Post()
+  create(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Body() dto: CreatePracticeQuestionDto,
+  ) {
+    return this.questions.create(user.tenantId, quizId, dto, user.membershipId);
+  }
+
+  @Post('import')
+  import(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Body() dto: ImportPracticeQuestionsDto,
+  ) {
+    return this.questions.importMany(
+      user.tenantId,
+      quizId,
+      dto.questions,
+      user.membershipId,
+    );
+  }
+
+  // Must come before ':id/...' routes so Nest doesn't match these literal
+  // segments as an :id param.
+  @Post('attachment-upload-url')
+  getAttachmentUploadUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Body() dto: RequestPracticeAttachmentUploadUrlDto,
+  ) {
+    return this.questions.getAttachmentUploadUrl(user.tenantId, quizId, dto);
+  }
+
+  @Patch('reorder')
+  reorder(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Body() dto: ReorderPracticeQuestionsDto,
+  ) {
+    return this.questions.reorder(
+      user.tenantId,
+      quizId,
+      dto.module,
+      dto.orderedIds,
+      user.membershipId,
+    );
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdatePracticeQuestionDto,
+  ) {
+    return this.questions.update(user.tenantId, quizId, id, dto, user.membershipId);
+  }
+
+  @Get(':id/attachment-url')
+  getAttachmentViewUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+  ) {
+    return this.questions.getAttachmentViewUrl(user.tenantId, quizId, id);
+  }
+
+  @Get(':id/image-url')
+  getImageViewUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+  ) {
+    return this.questions.getImageViewUrl(user.tenantId, quizId, id);
+  }
+
+  @Get(':id/options/:optionId/image-url')
+  getOptionImageViewUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+    @Param('optionId') optionId: string,
+  ) {
+    return this.questions.getOptionImageViewUrl(user.tenantId, quizId, id, optionId);
+  }
+
+  @Post(':id/duplicate')
+  duplicate(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+  ) {
+    return this.questions.duplicate(user.tenantId, quizId, id, user.membershipId);
+  }
+
+  @Delete(':id')
+  remove(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+  ) {
+    return this.questions.remove(user.tenantId, quizId, id, user.membershipId);
+  }
+}

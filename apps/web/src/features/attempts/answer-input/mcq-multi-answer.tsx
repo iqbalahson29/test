@@ -1,8 +1,10 @@
+import { DocumentViewer } from '@/components/document-viewer/document-viewer'
+import { MathText } from '@/components/math/math-text'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import type { AnswerInputProps } from './types'
 
-export function McqMultiAnswer({ question, value, onChange, readOnly }: AnswerInputProps) {
+export function McqMultiAnswer({ question, value, onChange, readOnly, attemptId }: AnswerInputProps) {
   const selected = (value as { optionIds?: string[] } | null)?.optionIds ?? []
   const toggle = (id: string) => {
     const next = selected.includes(id)
@@ -19,7 +21,15 @@ export function McqMultiAnswer({ question, value, onChange, readOnly }: AnswerIn
             disabled={readOnly}
             onCheckedChange={() => toggle(o.id)}
           />
-          {o.text}
+          <MathText text={o.text} />
+          {o.imageFilename && (
+            <DocumentViewer
+              mimeType={o.imageMimeType}
+              filename={o.imageFilename}
+              path={`/attempts/${attemptId}/questions/${question.id}/options/${o.id}/image-url`}
+              imageThumbnail
+            />
+          )}
         </Label>
       ))}
     </div>

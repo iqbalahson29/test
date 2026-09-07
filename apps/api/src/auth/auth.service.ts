@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
-import { AttemptStatus, Role, TenantStatus } from '@prisma/client';
+import { AttemptStatus, Role, TenantRequestStatus, TenantStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { assertPasswordNotReused, pushPasswordHistory } from '../common/password-history';
 import { SESSION_LOCK_TIMEOUT_MS } from '../common/session-lock.constants';
@@ -85,6 +85,18 @@ export class AuthService {
   async validateUser(email: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) {
+      // No account yet doesn't necessarily mean a typo'd password — it's
+      // also what a still-pending workspace request looks like, since
+      // TenantRequestsService.create() deliberately doesn't create a User
+      // until a superadmin approves it. Surface that distinctly so the
+      // frontend can point them at a status page instead of a generic
+      // "invalid credentials" that reads as if they mistyped something.
+      const pendingRequest = await this.prisma.tenantRequest.findFirst({
+        where: { requesterEmail: email, status: TenantRequestStatus.PENDING },
+      });
+      if (pendingRequest) {
+        throw new ForbiddenException('WORKSPACE_REQUEST_PENDING');
+      }
       throw new UnauthorizedException('Invalid credentials');
     }
     const matches = await bcrypt.compare(password, user.passwordHash);

@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
@@ -46,8 +47,10 @@ async function createPublishedQuiz(app: INestApplication<App>, token: string, ti
   await request(app.getHttpServer())
     .post(`/quizzes/${quizId}/questions`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ type: 'ESSAY', prompt: 'Reflect.', points: 1, config: {} })
+    .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'Reflect.', points: 1, config: {} })
     .expect(201);
+
+  await fillRemainingModules(app, token, quizId, ['RW_MODULE_1']);
 
   await request(app.getHttpServer())
     .patch(`/quizzes/${quizId}/status`)

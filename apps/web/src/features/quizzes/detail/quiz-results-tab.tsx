@@ -5,6 +5,8 @@ import { AttemptStatusBadge } from '../../attempts/status-badge'
 import { quizzesApi } from '../api'
 import { AttemptDetailDialog } from './attempt-detail-dialog'
 import { formatDateTime } from './format'
+import { ExportMenu } from '@/components/export-menu'
+import { exportSectionsToPdf, exportSheetsToExcel } from '@/lib/export'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -16,7 +18,19 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
-export function QuizResultsTab({ quizId }: { quizId: string }) {
+const RESULTS_COLUMNS = [
+  'Student',
+  'Email',
+  'Attempt #',
+  'Status',
+  'Score',
+  'Max score',
+  'Percent',
+  'Started',
+  'Submitted',
+]
+
+export function QuizResultsTab({ quizId, quizTitle }: { quizId: string; quizTitle: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['quiz-results', quizId],
     queryFn: () => quizzesApi.results(quizId),
@@ -33,6 +47,28 @@ export function QuizResultsTab({ quizId }: { quizId: string }) {
     )
   }
 
+  const resultRows = data.map((r) => [
+    r.studentName,
+    r.studentEmail,
+    r.attemptNumber,
+    r.status,
+    r.score ?? '—',
+    r.maxScore ?? '—',
+    r.percent !== null ? `${r.percent}%` : '—',
+    formatDateTime(r.startedAt),
+    r.submittedAt ? formatDateTime(r.submittedAt) : '—',
+  ])
+
+  const onExportPdf = () =>
+    exportSectionsToPdf(`${quizTitle} - results`, `Results — ${quizTitle}`, [
+      { columns: RESULTS_COLUMNS, rows: resultRows },
+    ])
+
+  const onExportExcel = () =>
+    exportSheetsToExcel(`${quizTitle} - results`, [
+      { name: 'Results', columns: RESULTS_COLUMNS, rows: resultRows },
+    ])
+
   if (data.length === 0) {
     return (
       <Card className="rounded-md">
@@ -46,9 +82,12 @@ export function QuizResultsTab({ quizId }: { quizId: string }) {
 
   return (
     <>
-      <p className="mb-2 text-[12px] text-muted-foreground">
-        Click a row to view a student's answers and override any question's score.
-      </p>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-[12px] text-muted-foreground">
+          Click a row to view a student's answers and override any question's score.
+        </p>
+        <ExportMenu onExportPdf={onExportPdf} onExportExcel={onExportExcel} />
+      </div>
       <Table containerClassName="rounded-md">
         <TableHeader>
           <TableRow>

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, QuestionType } from '@prisma/client';
+import { Prisma, QuestionType, QuizModule } from '@prisma/client';
 import {
   getQuestionConfigSchema,
   OPTION_BASED_TYPES,
@@ -96,7 +96,7 @@ export class QuestionsService {
     );
 
     const maxOrder = await this.prisma.question.aggregate({
-      where: { quizId },
+      where: { quizId, module: dto.module },
       _max: { order: true },
     });
     const nextOrder = (maxOrder._max.order ?? -1) + 1;
@@ -104,20 +104,28 @@ export class QuestionsService {
     return this.prisma.question.create({
       data: {
         quizId,
+        module: dto.module,
         type: dto.type,
         prompt: dto.prompt,
         points: dto.points,
         order: nextOrder,
         config,
+        difficulty: dto.difficulty ?? null,
         attachmentKey: dto.attachmentKey || undefined,
         attachmentFilename: dto.attachmentFilename || undefined,
         attachmentMimeType: dto.attachmentMimeType || undefined,
+        imageKey: dto.imageKey || undefined,
+        imageFilename: dto.imageFilename || undefined,
+        imageMimeType: dto.imageMimeType || undefined,
         options: dto.options
           ? {
               create: dto.options.map((o, i) => ({
                 text: o.text,
                 isCorrect: o.isCorrect,
                 order: i,
+                imageKey: o.imageKey || undefined,
+                imageFilename: o.imageFilename || undefined,
+                imageMimeType: o.imageMimeType || undefined,
               })),
             }
           : undefined,
@@ -147,6 +155,40 @@ export class QuestionsService {
       attachmentKey: dto.attachmentKey,
       attachmentFilename: dto.attachmentFilename ?? null,
       attachmentMimeType: dto.attachmentMimeType ?? null,
+    };
+  }
+
+  /** Same tri-state convention as resolveAttachmentUpdate, for the question's image. */
+  private resolveImageUpdate(dto: {
+    imageKey?: string;
+    imageFilename?: string;
+    imageMimeType?: string;
+  }): Pick<Prisma.QuestionUpdateInput, 'imageKey' | 'imageFilename' | 'imageMimeType'> {
+    if (dto.imageKey === undefined) return {};
+    if (dto.imageKey === '') {
+      return { imageKey: null, imageFilename: null, imageMimeType: null };
+    }
+    return {
+      imageKey: dto.imageKey,
+      imageFilename: dto.imageFilename ?? null,
+      imageMimeType: dto.imageMimeType ?? null,
+    };
+  }
+
+  /** Same tri-state convention, for an individual option's image. */
+  private resolveOptionImageUpdate(dto: {
+    imageKey?: string;
+    imageFilename?: string;
+    imageMimeType?: string;
+  }): Pick<Prisma.QuestionOptionUpdateInput, 'imageKey' | 'imageFilename' | 'imageMimeType'> {
+    if (dto.imageKey === undefined) return {};
+    if (dto.imageKey === '') {
+      return { imageKey: null, imageFilename: null, imageMimeType: null };
+    }
+    return {
+      imageKey: dto.imageKey,
+      imageFilename: dto.imageFilename ?? null,
+      imageMimeType: dto.imageMimeType ?? null,
     };
   }
 
@@ -192,6 +234,17 @@ export class QuestionsService {
       );
     }
 
+    // Moving a question to a different module appends it to the end of
+    // that module's order, same as a freshly created question would get.
+    let moduleUpdate: { module: QuizModule; order: number } | undefined;
+    if (dto.module !== undefined && dto.module !== existing.module) {
+      const maxOrder = await this.prisma.question.aggregate({
+        where: { quizId, module: dto.module },
+        _max: { order: true },
+      });
+      moduleUpdate = { module: dto.module, order: (maxOrder._max.order ?? -1) + 1 };
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.options !== undefined) {
         // Upsert by id rather than delete-all-and-recreate: an option's id
@@ -217,11 +270,24 @@ export class QuestionsService {
           if (o.id && keptIds.has(o.id)) {
             await tx.questionOption.update({
               where: { id: o.id },
-              data: { text: o.text, isCorrect: o.isCorrect, order: i },
+              data: {
+                text: o.text,
+                isCorrect: o.isCorrect,
+                order: i,
+                ...this.resolveOptionImageUpdate(o),
+              },
             });
           } else {
             await tx.questionOption.create({
-              data: { questionId, text: o.text, isCorrect: o.isCorrect, order: i },
+              data: {
+                questionId,
+                text: o.text,
+                isCorrect: o.isCorrect,
+                order: i,
+                imageKey: o.imageKey || undefined,
+                imageFilename: o.imageFilename || undefined,
+                imageMimeType: o.imageMimeType || undefined,
+              },
             });
           }
         }
@@ -229,10 +295,13 @@ export class QuestionsService {
       return tx.question.update({
         where: { id: questionId },
         data: {
+          ...moduleUpdate,
           prompt: dto.prompt,
           points: dto.points,
           config,
+          difficulty: dto.difficulty,
           ...this.resolveAttachmentUpdate(dto),
+          ...this.resolveImageUpdate(dto),
         },
         include: { options: { orderBy: { order: 'asc' } } },
       });
@@ -264,7 +333,7 @@ export class QuestionsService {
     }
 
     const maxOrder = await this.prisma.question.aggregate({
-      where: { quizId },
+      where: { quizId, module: existing.module },
       _max: { order: true },
     });
     const nextOrder = (maxOrder._max.order ?? -1) + 1;
@@ -272,19 +341,27 @@ export class QuestionsService {
     const copy = await this.prisma.question.create({
       data: {
         quizId,
+        module: existing.module,
         type: existing.type,
         prompt: `${existing.prompt} (Copy)`,
         points: existing.points,
         order: nextOrder,
         config: existing.config ?? {},
+        difficulty: existing.difficulty,
         attachmentKey: existing.attachmentKey,
         attachmentFilename: existing.attachmentFilename,
         attachmentMimeType: existing.attachmentMimeType,
+        imageKey: existing.imageKey,
+        imageFilename: existing.imageFilename,
+        imageMimeType: existing.imageMimeType,
         options: {
           create: existing.options.map((o) => ({
             text: o.text,
             isCorrect: o.isCorrect,
             order: o.order,
+            imageKey: o.imageKey,
+            imageFilename: o.imageFilename,
+            imageMimeType: o.imageMimeType,
           })),
         },
       },
@@ -368,12 +445,13 @@ export class QuestionsService {
   async reorder(
     tenantId: string,
     quizId: string,
+    module: QuizModule,
     orderedIds: string[],
     actorMembershipId?: string,
   ) {
     await this.getOwnQuiz(tenantId, quizId);
     const existing = await this.prisma.question.findMany({
-      where: { quizId },
+      where: { quizId, module },
       select: { id: true },
     });
     const existingIds = new Set(existing.map((q) => q.id));
@@ -384,7 +462,7 @@ export class QuestionsService {
       [...existingIds].every((id) => providedIds.has(id));
     if (!sameSet) {
       throw new BadRequestException(
-        "orderedIds must exactly match the quiz's current question ids",
+        "orderedIds must exactly match this module's current question ids",
       );
     }
 
@@ -435,5 +513,44 @@ export class QuestionsService {
       question.attachmentFilename ?? 'document',
     );
     return { viewUrl, filename: question.attachmentFilename, mimeType: question.attachmentMimeType };
+  }
+
+  async getImageViewUrl(tenantId: string, quizId: string, questionId: string) {
+    await this.getOwnQuiz(tenantId, quizId);
+    const question = await this.prisma.question.findUnique({
+      where: { id: questionId },
+    });
+    if (!question || question.quizId !== quizId) {
+      throw new NotFoundException('Question not found');
+    }
+    if (!question.imageKey) {
+      throw new NotFoundException('This question has no image');
+    }
+    const viewUrl = await this.storage.getViewUrl(
+      question.imageKey,
+      question.imageFilename ?? 'image',
+    );
+    return { viewUrl, filename: question.imageFilename, mimeType: question.imageMimeType };
+  }
+
+  async getOptionImageViewUrl(
+    tenantId: string,
+    quizId: string,
+    questionId: string,
+    optionId: string,
+  ) {
+    await this.getOwnQuiz(tenantId, quizId);
+    const option = await this.prisma.questionOption.findUnique({
+      where: { id: optionId },
+      include: { question: true },
+    });
+    if (!option || option.question.quizId !== quizId || option.questionId !== questionId) {
+      throw new NotFoundException('Option not found');
+    }
+    if (!option.imageKey) {
+      throw new NotFoundException('This option has no image');
+    }
+    const viewUrl = await this.storage.getViewUrl(option.imageKey, option.imageFilename ?? 'image');
+    return { viewUrl, filename: option.imageFilename, mimeType: option.imageMimeType };
   }
 }

@@ -58,6 +58,10 @@ export function LoginPage() {
         navigate(consumePostAuthRedirect() ?? '/', { replace: true })
       }
     } catch (err) {
+      if (err instanceof ApiError && err.message === 'WORKSPACE_REQUEST_PENDING') {
+        navigate('/workspace-pending', { state: { email } })
+        return
+      }
       setError(err instanceof ApiError ? err.message : 'Login failed')
     } finally {
       setSubmitting(false)

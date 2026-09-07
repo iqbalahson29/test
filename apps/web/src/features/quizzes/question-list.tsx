@@ -1,13 +1,20 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, ArrowUp, Eye, Paperclip, Pencil } from 'lucide-react'
-import { AUTO_GRADABLE_TYPES } from '@quiz-platform/shared'
+import { AlertTriangle, ArrowDown, ArrowUp, Eye, Paperclip, Pencil, Plus } from 'lucide-react'
+import {
+  AUTO_GRADABLE_TYPES,
+  QUIZ_MODULE_SEQUENCE,
+  QUIZ_MODULE_LABELS,
+} from '@quiz-platform/shared'
+import type { QuizModule } from '@quiz-platform/shared'
 import { ApiError } from '../../lib/api-client'
 import { questionsApi } from './api'
 import { QuestionDetailDialog } from './detail/question-detail-dialog'
 import { QuestionRowMenu } from './detail/question-row-menu'
 import { useQuestionActions } from './detail/use-question-actions'
 import type { QuestionDetail } from './types'
+import { DifficultyBadge } from '@/components/difficulty-badge'
+import { MathText } from '@/components/math/math-text'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -66,11 +73,13 @@ export function QuestionList({
   questions,
   editable,
   onEdit,
+  onAddQuestion,
 }: {
   quizId: string
   questions: QuestionDetail[]
   editable: boolean
   onEdit: (question: QuestionDetail) => void
+  onAddQuestion: (module: QuizModule) => void
 }) {
   const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
@@ -87,7 +96,8 @@ export function QuestionList({
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['quiz', quizId] })
 
   const reorderMutation = useMutation({
-    mutationFn: (orderedIds: string[]) => questionsApi.reorder(quizId, orderedIds),
+    mutationFn: ({ module, orderedIds }: { module: QuizModule; orderedIds: string[] }) =>
+      questionsApi.reorder(quizId, module, orderedIds),
     onSuccess: () => {
       invalidate()
       setError(null)
@@ -106,14 +116,14 @@ export function QuestionList({
       setError(err instanceof ApiError ? err.message : 'Could not delete question'),
   })
 
-  const move = (index: number, dir: -1 | 1) => {
+  const move = (module: QuizModule, moduleQuestions: QuestionDetail[], index: number, dir: -1 | 1) => {
     const target = index + dir
-    if (target < 0 || target >= questions.length) return
-    const ids = questions.map((q) => q.id)
+    if (target < 0 || target >= moduleQuestions.length) return
+    const ids = moduleQuestions.map((q) => q.id)
     const tmp = ids[index]
     ids[index] = ids[target]
     ids[target] = tmp
-    reorderMutation.mutate(ids)
+    reorderMutation.mutate({ module, orderedIds: ids })
   }
 
   const runConfirmedAction = () => {
@@ -160,69 +170,101 @@ export function QuestionList({
       {questions.length === 0 && (
         <p className="text-sm text-muted-foreground">No questions yet.</p>
       )}
-      {questions.map((q, i) => (
-        <Card key={q.id}>
-          <CardContent className="flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline">{q.type}</Badge>
-                <span className="text-sm text-muted-foreground">{q.points} pts</span>
-                {q.attachmentKey && (
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Paperclip className="size-3" />
-                    {q.attachmentFilename}
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 truncate text-sm">{q.prompt}</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
+      {QUIZ_MODULE_SEQUENCE.map((module) => {
+        const moduleQuestions = questions.filter((q) => q.module === module)
+        return (
+          <div key={module} className="space-y-2 pb-4">
+            <div className="flex items-center justify-between gap-2 pt-2">
+              <h3 className="text-[12.5px] font-semibold text-gray-700">
+                {QUIZ_MODULE_LABELS[module]}{' '}
+                <span className="font-normal text-muted-foreground">
+                  ({moduleQuestions.length})
+                </span>
+              </h3>
               {editable && (
-                <>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => move(i, -1)}
-                    disabled={i === 0}
-                    aria-label="Move up"
-                  >
-                    <ArrowUp />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => move(i, 1)}
-                    disabled={i === questions.length - 1}
-                    aria-label="Move down"
-                  >
-                    <ArrowDown />
-                  </Button>
-                </>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onAddQuestion(module)}
+                >
+                  <Plus />
+                  Add question
+                </Button>
               )}
-              <QuestionRowMenu
-                question={q}
-                editable={editable}
-                onView={() => setConfirmAction({ kind: 'view', question: q })}
-                onEdit={() => setConfirmAction({ kind: 'edit', question: q })}
-                onDuplicate={() => setConfirmAction({ kind: 'duplicate', question: q })}
-                onRegrade={
-                  (AUTO_GRADABLE_TYPES as string[]).includes(q.type)
-                    ? () => setConfirmAction({ kind: 'regrade', question: q })
-                    : undefined
-                }
-                onDelete={() => setConfirmAction({ kind: 'delete', question: q })}
-                disabled={
-                  deleteMutation.isPending ||
-                  actions.duplicate.isPending ||
-                  actions.regradeQuestion.isPending
-                }
-              />
             </div>
-          </CardContent>
-        </Card>
-      ))}
+            {moduleQuestions.length === 0 && (
+              <p className="text-sm text-muted-foreground">No questions in this module yet.</p>
+            )}
+            {moduleQuestions.map((q, i) => (
+              <Card key={q.id}>
+                <CardContent className="flex items-center justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline">{q.type}</Badge>
+                      {q.difficulty && <DifficultyBadge difficulty={q.difficulty} />}
+                      <span className="text-sm text-muted-foreground">{q.points} pts</span>
+                      {q.attachmentKey && (
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Paperclip className="size-3" />
+                          {q.attachmentFilename}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 truncate text-sm">
+                      <MathText text={q.prompt} />
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {editable && (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => move(module, moduleQuestions, i, -1)}
+                          disabled={i === 0}
+                          aria-label="Move up"
+                        >
+                          <ArrowUp />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => move(module, moduleQuestions, i, 1)}
+                          disabled={i === moduleQuestions.length - 1}
+                          aria-label="Move down"
+                        >
+                          <ArrowDown />
+                        </Button>
+                      </>
+                    )}
+                    <QuestionRowMenu
+                      question={q}
+                      editable={editable}
+                      onView={() => setConfirmAction({ kind: 'view', question: q })}
+                      onEdit={() => setConfirmAction({ kind: 'edit', question: q })}
+                      onDuplicate={() => setConfirmAction({ kind: 'duplicate', question: q })}
+                      onRegrade={
+                        (AUTO_GRADABLE_TYPES as string[]).includes(q.type)
+                          ? () => setConfirmAction({ kind: 'regrade', question: q })
+                          : undefined
+                      }
+                      onDelete={() => setConfirmAction({ kind: 'delete', question: q })}
+                      disabled={
+                        deleteMutation.isPending ||
+                        actions.duplicate.isPending ||
+                        actions.regradeQuestion.isPending
+                      }
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )
+      })}
       <QuestionDetailDialog
         quizId={quizId}
         question={viewing}

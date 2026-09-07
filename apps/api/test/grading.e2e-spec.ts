@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules, submitAllModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
@@ -88,6 +89,7 @@ describe('Grading (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'MCQ_MULTI',
+        module: 'RW_MODULE_1',
         prompt: 'Pick primes',
         points: 4,
         config: {},
@@ -111,6 +113,7 @@ describe('Grading (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'NUMERIC',
+        module: 'RW_MODULE_1',
         prompt: 'Approx value',
         points: 2,
         config: { correctAnswer: 10, tolerance: 1 },
@@ -120,15 +123,17 @@ describe('Grading (e2e)', () => {
     const essay = await request(app.getHttpServer())
       .post(`/quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', prompt: 'Explain.', points: 5, config: {} })
+      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'Explain.', points: 5, config: {} })
       .expect(201);
 
     // A second essay the student will leave unanswered entirely.
     const skippedEssay = await request(app.getHttpServer())
       .post(`/quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', prompt: 'Skip me.', points: 3, config: {} })
+      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'Skip me.', points: 3, config: {} })
       .expect(201);
+
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
 
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
@@ -172,25 +177,20 @@ describe('Grading (e2e)', () => {
 
     // skippedEssay intentionally left with no autosaved response.
 
-    const submitRes = await request(app.getHttpServer())
-      .post(`/attempts/${attemptId}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    const submitRes = await submitAllModules(app, studentToken, attemptId);
 
-    expect(submitRes.body.status).toBe('SUBMITTED');
-    expect(submitRes.body.score).toBeNull();
-    expect(Number(submitRes.body.maxScore)).toBe(14);
-    const mcqQ = submitRes.body.questions.find(
-      (q: { id: string }) => q.id === mcq.body.id,
-    );
+    expect(submitRes.status).toBe('SUBMITTED');
+    expect((submitRes as { score: unknown }).score).toBeNull();
+    expect(Number((submitRes as { maxScore: unknown }).maxScore)).toBe(14);
+    const submittedQuestions = submitRes.questions as {
+      id: string;
+      awardedPoints: string | null;
+    }[];
+    const mcqQ = submittedQuestions.find((q) => q.id === mcq.body.id)!;
     expect(Number(mcqQ.awardedPoints)).toBeCloseTo(1.33, 2);
-    const numericQ = submitRes.body.questions.find(
-      (q: { id: string }) => q.id === numeric.body.id,
-    );
+    const numericQ = submittedQuestions.find((q) => q.id === numeric.body.id)!;
     expect(Number(numericQ.awardedPoints)).toBe(2);
-    const essayQ = submitRes.body.questions.find(
-      (q: { id: string }) => q.id === essay.body.id,
-    );
+    const essayQ = submittedQuestions.find((q) => q.id === essay.body.id)!;
     expect(essayQ.awardedPoints).toBeNull();
 
     const queue = await request(app.getHttpServer())
@@ -261,8 +261,9 @@ describe('Grading (e2e)', () => {
     const essay = await request(app.getHttpServer())
       .post(`/quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', prompt: 'x', points: 1, config: {} })
+      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {} })
       .expect(201);
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
@@ -278,10 +279,7 @@ describe('Grading (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ quizId })
       .expect(201);
-    await request(app.getHttpServer())
-      .post(`/attempts/${start.body.id}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    await submitAllModules(app, studentToken, start.body.id);
 
     await request(app.getHttpServer())
       .get(`/quizzes/${quizId}/grading-queue`)

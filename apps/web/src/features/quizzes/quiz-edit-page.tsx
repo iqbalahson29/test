@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Eye, MoreHorizontal, Pencil } from 'lucide-react'
+import { QUIZ_MODULE_SEQUENCE, QUIZ_MODULE_LABELS } from '@quiz-platform/shared'
+import type { QuizModule } from '@quiz-platform/shared'
 import { ApiError } from '../../lib/api-client'
 import { QuizAnalyticsPage } from '../analytics/quiz-analytics-page'
 import { GradingQueuePage } from '../grading/grading-queue-page'
@@ -17,10 +19,14 @@ import { QUIZ_TABS } from './detail/tab-key'
 import type { QuizTabKey } from './detail/tab-key'
 import { useQuestionActions } from './detail/use-question-actions'
 import { useQuizQuickActions } from './detail/use-quiz-quick-actions'
+import { ImportQuestionsDialog } from './import-questions-dialog'
 import { QuestionForm } from './question-editor/question-form'
 import { QuestionList } from './question-list'
 import { StatusBadge } from './status-badge'
 import type { CreateQuestionInput, QuestionDetail, QuestionFormValue } from './types'
+import { DIFFICULTY_LABELS } from '@/components/difficulty-badge'
+import { ExportMenu } from '@/components/export-menu'
+import { exportSectionsToPdf, exportSheetsToExcel } from '@/lib/export'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -42,18 +48,63 @@ import { cn } from '@/lib/utils'
 
 type QuickActionKey = 'duplicate' | 'export' | 'archive' | 'restore'
 
+const QUESTIONS_COLUMNS = [
+  '#',
+  'Module',
+  'Type',
+  'Difficulty',
+  'Points',
+  'Prompt',
+  'Options',
+  'Correct answer(s)',
+  'Image filename',
+]
+
+function questionsExportRows(questions: QuestionDetail[]) {
+  return questions.map((q, i) => [
+    i + 1,
+    QUIZ_MODULE_LABELS[q.module],
+    q.type,
+    q.difficulty ? DIFFICULTY_LABELS[q.difficulty] : '',
+    q.points,
+    q.prompt,
+    q.options.map((o) => o.text).join('; '),
+    q.options
+      .filter((o) => o.isCorrect)
+      .map((o) => o.text)
+      .join('; '),
+    q.imageFilename ?? '',
+  ])
+}
+
 function fromQuestionDetail(q: QuestionDetail): QuestionFormValue {
   return {
     type: q.type,
+    module: q.module,
     prompt: q.prompt,
     points: q.points,
     config: q.config,
-    options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })),
+    difficulty: q.difficulty,
+    options: q.options.map((o) => ({
+      id: o.id,
+      text: o.text,
+      isCorrect: o.isCorrect,
+      imageKey: o.imageKey ?? undefined,
+      imageFilename: o.imageFilename ?? undefined,
+      imageMimeType: o.imageMimeType ?? undefined,
+    })),
     attachment: q.attachmentKey
       ? {
           key: q.attachmentKey,
           filename: q.attachmentFilename ?? 'document',
           mimeType: q.attachmentMimeType ?? '',
+        }
+      : null,
+    image: q.imageKey
+      ? {
+          key: q.imageKey,
+          filename: q.imageFilename ?? 'image',
+          mimeType: q.imageMimeType ?? '',
         }
       : null,
   }
@@ -62,15 +113,30 @@ function fromQuestionDetail(q: QuestionDetail): QuestionFormValue {
 function toCreateInput(value: QuestionFormValue): CreateQuestionInput {
   return {
     type: value.type,
+    module: value.module,
     prompt: value.prompt,
     points: Number(value.points),
     config: value.config,
-    options: value.options.length > 0 ? value.options : undefined,
-    // An empty string clears the attachment server-side — harmless to send
-    // when there was never one, and correctly clears one the user removed.
+    difficulty: value.difficulty,
+    // `imageFile` is a local File object kept only for in-editor preview —
+    // never sent to the API.
+    options:
+      value.options.length > 0
+        ? value.options.map(({ imageFile: _imageFile, ...o }) => ({
+            ...o,
+            imageKey: o.imageKey ?? '',
+            imageFilename: o.imageFilename ?? '',
+            imageMimeType: o.imageMimeType ?? '',
+          }))
+        : undefined,
+    // An empty string clears the attachment/image server-side — harmless to
+    // send when there was never one, and correctly clears one the user removed.
     attachmentKey: value.attachment?.key ?? '',
     attachmentFilename: value.attachment?.filename ?? '',
     attachmentMimeType: value.attachment?.mimeType ?? '',
+    imageKey: value.image?.key ?? '',
+    imageFilename: value.image?.filename ?? '',
+    imageMimeType: value.image?.mimeType ?? '',
   }
 }
 
@@ -99,8 +165,10 @@ export function QuizEditPage() {
   })
 
   const [editingQuestion, setEditingQuestion] = useState<QuestionDetail | 'new' | null>(null)
+  const [addQuestionModule, setAddQuestionModule] = useState<QuizModule>(QUIZ_MODULE_SEQUENCE[0])
   const [questionError, setQuestionError] = useState<string | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [confirmActionKey, setConfirmActionKey] = useState<QuickActionKey | null>(null)
   const quizQuestionActions = useQuestionActions(id ?? '')
 
@@ -278,6 +346,7 @@ export function QuizEditPage() {
           }}
           onAddQuestion={() => {
             setEditingQuestion('new')
+            setAddQuestionModule(QUIZ_MODULE_SEQUENCE[0])
             setActiveTab('questions')
           }}
           onDeleteQuizClick={() => setDeleteDialogOpen(true)}
@@ -293,24 +362,54 @@ export function QuizEditPage() {
               graded attempts unless you regrade.
             </p>
           )}
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-[12.5px] font-bold text-gray-800">
               Questions ({quiz.questions.length})
             </h2>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <ExportMenu
+                disabled={quiz.questions.length === 0}
+                size="default"
+                className="w-[150px]"
+                onExportPdf={() =>
+                  exportSectionsToPdf(
+                    `${quiz.title} - questions`,
+                    `Questions — ${quiz.title}`,
+                    QUIZ_MODULE_SEQUENCE.map((module) => ({
+                      heading: QUIZ_MODULE_LABELS[module],
+                      columns: QUESTIONS_COLUMNS,
+                      rows: questionsExportRows(quiz.questions.filter((q) => q.module === module)),
+                    })),
+                  )
+                }
+                onExportExcel={() =>
+                  exportSheetsToExcel(
+                    `${quiz.title} - questions`,
+                    QUIZ_MODULE_SEQUENCE.map((module) => ({
+                      name: QUIZ_MODULE_LABELS[module],
+                      columns: QUESTIONS_COLUMNS,
+                      rows: questionsExportRows(quiz.questions.filter((q) => q.module === module)),
+                    })),
+                  )
+                }
+              />
               <Button
                 type="button"
                 variant="outline"
+                className="w-[150px]"
                 onClick={() => quizQuestionActions.regradeQuiz.mutate()}
                 disabled={quizQuestionActions.regradeQuiz.isPending || quiz.questions.length === 0}
               >
                 {quizQuestionActions.regradeQuiz.isPending ? 'Regrading…' : 'Regrade quiz'}
               </Button>
-              {editingQuestion === null && (
-                <Button type="button" onClick={() => setEditingQuestion('new')}>
-                  Add question
-                </Button>
-              )}
+              <Button
+                type="button"
+                variant="outline"
+                className="w-[150px]"
+                onClick={() => setImportOpen(true)}
+              >
+                Import from Excel
+              </Button>
             </div>
           </div>
 
@@ -331,6 +430,7 @@ export function QuizEditPage() {
                 quizId={quiz.id}
                 questionId={editingQuestion === 'new' ? undefined : editingQuestion.id}
                 initial={editingQuestion === 'new' ? undefined : fromQuestionDetail(editingQuestion)}
+                defaultModule={addQuestionModule}
                 submitting={createQuestionMutation.isPending || updateQuestionMutation.isPending}
                 onCancel={() => {
                   setEditingQuestion(null)
@@ -352,15 +452,19 @@ export function QuizEditPage() {
             questions={quiz.questions}
             editable
             onEdit={(q) => setEditingQuestion(q)}
+            onAddQuestion={(module) => {
+              setAddQuestionModule(module)
+              setEditingQuestion('new')
+            }}
           />
         </div>
       )}
 
       {activeTab === 'settings' && <QuizSettingsTab quiz={quiz} />}
       {activeTab === 'assign' && <QuizAssignTab quiz={quiz} />}
-      {activeTab === 'results' && <QuizResultsTab quizId={quiz.id} />}
+      {activeTab === 'results' && <QuizResultsTab quizId={quiz.id} quizTitle={quiz.title} />}
       {activeTab === 'analytics' && <QuizAnalyticsPage />}
-      {activeTab === 'grading' && <GradingQueuePage />}
+      {activeTab === 'grading' && <GradingQueuePage quizTitle={quiz.title} />}
 
       <DeleteQuizDialog
         quiz={quiz}
@@ -369,6 +473,13 @@ export function QuizEditPage() {
         onConfirm={() => quickActions.remove.mutate()}
         pending={quickActions.remove.isPending}
         error={quickActions.error}
+      />
+
+      <ImportQuestionsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        quizId={quiz.id}
+        quizTitle={quiz.title}
       />
 
       <Dialog

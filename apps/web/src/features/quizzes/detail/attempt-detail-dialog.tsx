@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
+import { QUIZ_MODULE_SEQUENCE, QUIZ_MODULE_LABELS } from '@quiz-platform/shared'
 import { ApiError } from '../../../lib/api-client'
 import { gradingApi } from '../../grading/api'
 import { AttemptStatusBadge } from '../../attempts/status-badge'
-import { quizzesApi } from '../api'
+import { quizzesApi, questionsApi } from '../api'
 import type { AttemptDetailQuestion } from '../types'
 import { formatDateTime } from './format'
+import { DifficultyBadge } from '@/components/difficulty-badge'
+import { DocumentViewer } from '@/components/document-viewer/document-viewer'
+import { MathText } from '@/components/math/math-text'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,7 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
-function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
+function AnswerPreview({ quizId, q }: { quizId: string; q: AttemptDetailQuestion }) {
   const answer = q.answer as Record<string, unknown> | null
 
   const [downloading, setDownloading] = useState(false)
@@ -64,7 +68,15 @@ function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
             )}
           >
             {selectedIds.has(o.id) && <span className="text-xs font-semibold">Picked:</span>}
-            {o.text}
+            <MathText text={o.text} />
+            {o.imageFilename && (
+              <DocumentViewer
+                mimeType={o.imageMimeType}
+                filename={o.imageFilename}
+                path={questionsApi.optionImageUrlPath(quizId, q.questionId, o.id)}
+                imageThumbnail
+              />
+            )}
             {o.isCorrect && <span className="ml-auto text-xs font-semibold">Correct</span>}
           </li>
         ))}
@@ -73,9 +85,10 @@ function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
   }
 
   if (q.type === 'ESSAY') {
+    const text = answer?.text as string | undefined
     return (
       <p className="rounded-md border bg-muted/40 px-2.5 py-2 text-sm whitespace-pre-wrap">
-        {(answer?.text as string) || <span className="text-muted-foreground">No answer.</span>}
+        {text ? <MathText text={text} /> : <span className="text-muted-foreground">No answer.</span>}
       </p>
     )
   }
@@ -96,7 +109,8 @@ function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
     return <p className="text-sm">{answer?.value != null ? String(answer.value) : '—'}</p>
   }
   if (q.type === 'SHORT_TEXT') {
-    return <p className="text-sm">{(answer?.text as string) || '—'}</p>
+    const text = answer?.text as string | undefined
+    return <p className="text-sm">{text ? <MathText text={text} /> : '—'}</p>
   }
   if (q.type === 'MATCHING') {
     const selections = (answer?.selections as { left: string; right: string }[]) ?? []
@@ -104,7 +118,7 @@ function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
       <ul className="space-y-0.5 text-sm">
         {selections.map((s, i) => (
           <li key={i}>
-            {s.left} → {s.right}
+            <MathText text={s.left} /> → <MathText text={s.right} />
           </li>
         ))}
       </ul>
@@ -115,7 +129,9 @@ function AnswerPreview({ q }: { q: AttemptDetailQuestion }) {
   if (q.type === 'FILL_BLANK') {
     const answers = (answer?.answers as string[]) ?? []
     return answers.length ? (
-      <p className="text-sm">{answers.join(', ')}</p>
+      <p className="text-sm">
+        <MathText text={answers.join(', ')} />
+      </p>
     ) : (
       <p className="text-sm text-muted-foreground">No answer.</p>
     )
@@ -166,12 +182,33 @@ function QuestionOverrideRow({
     <div className="rounded-lg border p-3">
       <div className="mb-2 flex items-center gap-2">
         <Badge variant="outline">{q.type}</Badge>
+        {q.difficulty && <DifficultyBadge difficulty={q.difficulty} />}
         <span className="text-xs text-muted-foreground">{q.points} pts max</span>
         {q.autoGraded && <span className="text-xs text-muted-foreground">· auto-graded</span>}
       </div>
-      <p className="mb-2 text-sm font-medium">{q.prompt}</p>
+      <p className="mb-2 text-sm font-medium">
+        <MathText text={q.prompt} />
+      </p>
+      {q.attachmentFilename && (
+        <div className="mb-3">
+          <DocumentViewer
+            mimeType={q.attachmentMimeType}
+            filename={q.attachmentFilename}
+            path={questionsApi.attachmentUrlPath(quizId, q.questionId)}
+          />
+        </div>
+      )}
+      {q.imageFilename && (
+        <div className="mb-3">
+          <DocumentViewer
+            mimeType={q.imageMimeType}
+            filename={q.imageFilename}
+            path={questionsApi.imageUrlPath(quizId, q.questionId)}
+          />
+        </div>
+      )}
       <div className="mb-3">
-        <AnswerPreview q={q} />
+        <AnswerPreview quizId={quizId} q={q} />
       </div>
       {q.responseId && (
         <div className="flex flex-wrap items-end gap-2">
@@ -295,10 +332,36 @@ export function AttemptDetailDialog({
                 </AlertDescription>
               </Alert>
             ) : (
-              <div className="space-y-3">
-                {data.questions.map((q) => (
-                  <QuestionOverrideRow key={q.questionId} quizId={quizId} attemptId={data.attemptId} q={q} />
-                ))}
+              <div className="space-y-5">
+                {QUIZ_MODULE_SEQUENCE.map((module) => {
+                  const moduleQuestions = data.questions.filter((q) => q.module === module)
+                  if (moduleQuestions.length === 0) return null
+                  const modulePoints = moduleQuestions.reduce(
+                    (sum, q) => sum + Number(q.awardedPoints ?? 0),
+                    0,
+                  )
+                  const moduleMaxPoints = moduleQuestions.reduce((sum, q) => sum + Number(q.points), 0)
+                  return (
+                    <div key={module} className="space-y-3">
+                      <div className="flex items-baseline justify-between border-b pb-1">
+                        <h3 className="text-sm font-semibold text-gray-800">
+                          {QUIZ_MODULE_LABELS[module]}
+                        </h3>
+                        <span className="text-xs text-muted-foreground">
+                          {modulePoints}/{moduleMaxPoints} pts
+                        </span>
+                      </div>
+                      {moduleQuestions.map((q) => (
+                        <QuestionOverrideRow
+                          key={q.questionId}
+                          quizId={quizId}
+                          attemptId={data.attemptId}
+                          q={q}
+                        />
+                      ))}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </>

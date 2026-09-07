@@ -5,6 +5,8 @@ import { AlertTriangle, Users } from 'lucide-react'
 import { Role } from '@quiz-platform/shared'
 import { apiGet, ApiError } from '../../lib/api-client'
 import { assignmentsApi } from './api'
+import { ExportMenu } from '@/components/export-menu'
+import { exportSectionsToPdf, exportSheetsToExcel } from '@/lib/export'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -48,7 +50,9 @@ function initials(name: string) {
     .toUpperCase()
 }
 
-export function AssignmentPanel({ quizId }: { quizId: string }) {
+const ASSIGNMENTS_COLUMNS = ['Assigned to', 'Type', 'Email', 'Due date']
+
+export function AssignmentPanel({ quizId, quizTitle }: { quizId: string; quizTitle: string }) {
   const queryClient = useQueryClient()
   const { data: assignments, isLoading } = useQuery({
     queryKey: ['assignments', quizId],
@@ -136,10 +140,30 @@ export function AssignmentPanel({ quizId }: { quizId: string }) {
     assignAllMutation.mutate()
   }
 
+  const assignmentExportRows = (assignments ?? []).map((a) => [
+    a.target.type === 'GROUP' ? `Group: ${a.target.name}` : a.target.name,
+    a.target.type,
+    a.target.email ?? '—',
+    a.dueAt ? new Date(a.dueAt).toLocaleDateString() : '—',
+  ])
+
+  const onExportPdf = () =>
+    exportSectionsToPdf(`${quizTitle} - assignments`, `Assigned to — ${quizTitle}`, [
+      { columns: ASSIGNMENTS_COLUMNS, rows: assignmentExportRows },
+    ])
+
+  const onExportExcel = () =>
+    exportSheetsToExcel(`${quizTitle} - assignments`, [
+      { name: 'Assigned to', columns: ASSIGNMENTS_COLUMNS, rows: assignmentExportRows },
+    ])
+
   return (
     <Card className="mb-6">
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
         <h2 className="text-[12.5px] font-bold text-gray-800">Assigned to</h2>
+        {assignments && assignments.length > 0 && (
+          <ExportMenu onExportPdf={onExportPdf} onExportExcel={onExportExcel} />
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-2">

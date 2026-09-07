@@ -67,6 +67,25 @@ export class AttemptsController {
     return this.attempts.getAttachmentUrl(user.membershipId, id, questionId);
   }
 
+  @Get(':id/questions/:questionId/image-url')
+  getImageUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+    @Param('questionId') questionId: string,
+  ) {
+    return this.attempts.getImageUrl(user.membershipId, id, questionId);
+  }
+
+  @Get(':id/questions/:questionId/options/:optionId/image-url')
+  getOptionImageUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+    @Param('questionId') questionId: string,
+    @Param('optionId') optionId: string,
+  ) {
+    return this.attempts.getOptionImageUrl(user.membershipId, id, questionId, optionId);
+  }
+
   @Post(':id/responses/:questionId/upload-url')
   getUploadUrl(
     @CurrentUser() user: AccessTokenPayload,
@@ -77,8 +96,13 @@ export class AttemptsController {
     return this.attempts.getUploadUrl(user.membershipId, id, questionId, dto, user.sessionId);
   }
 
-  @Post(':id/submit')
-  submit(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
-    return this.attempts.submit(user.membershipId, id, user.sessionId);
+  @Post(':id/modules/complete')
+  completeCurrentModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+    return this.attempts.completeCurrentModule(user.membershipId, id, user.sessionId);
+  }
+
+  @Post(':id/modules/begin-next')
+  beginNextModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+    return this.attempts.beginNextModule(user.membershipId, id, user.sessionId);
   }
 }

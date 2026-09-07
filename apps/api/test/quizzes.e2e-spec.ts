@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
@@ -39,6 +40,7 @@ async function createTenantAdmin(app: INestApplication<App>, label: string) {
 
 const VALID_QUESTIONS: Array<{
   type: string;
+  module: string;
   prompt: string;
   points: number;
   config: object;
@@ -46,6 +48,7 @@ const VALID_QUESTIONS: Array<{
 }> = [
   {
     type: 'MCQ_SINGLE',
+    module: 'RW_MODULE_1',
     prompt: 'Capital of France?',
     points: 2,
     config: {},
@@ -56,6 +59,7 @@ const VALID_QUESTIONS: Array<{
   },
   {
     type: 'MCQ_MULTI',
+    module: 'RW_MODULE_1',
     prompt: 'Pick primes',
     points: 3,
     config: {},
@@ -67,6 +71,7 @@ const VALID_QUESTIONS: Array<{
   },
   {
     type: 'TRUE_FALSE',
+    module: 'RW_MODULE_1',
     prompt: 'Sky is blue',
     points: 1,
     config: {},
@@ -77,24 +82,28 @@ const VALID_QUESTIONS: Array<{
   },
   {
     type: 'SHORT_TEXT',
+    module: 'RW_MODULE_1',
     prompt: 'Symbol for water?',
     points: 2,
     config: { acceptedAnswers: ['H2O'], caseSensitive: false },
   },
   {
     type: 'NUMERIC',
+    module: 'RW_MODULE_1',
     prompt: 'Pi to 2dp?',
     points: 2,
     config: { correctAnswer: 3.14, tolerance: 0.01 },
   },
   {
     type: 'ESSAY',
+    module: 'RW_MODULE_1',
     prompt: 'Explain photosynthesis.',
     points: 5,
     config: { minWords: 50, maxWords: 300 },
   },
   {
     type: 'MATCHING',
+    module: 'RW_MODULE_1',
     prompt: 'Match capitals',
     points: 4,
     config: {
@@ -106,6 +115,7 @@ const VALID_QUESTIONS: Array<{
   },
   {
     type: 'FILL_BLANK',
+    module: 'RW_MODULE_1',
     prompt: 'The {{1}} orbits the {{2}}.',
     points: 2,
     config: {
@@ -117,6 +127,7 @@ const VALID_QUESTIONS: Array<{
   },
   {
     type: 'FILE_UPLOAD',
+    module: 'RW_MODULE_1',
     prompt: 'Upload your proof.',
     points: 10,
     config: { allowedExtensions: ['pdf'], maxSizeMb: 5 },
@@ -167,21 +178,25 @@ describe('Quiz builder (e2e)', () => {
       createdIds.push(res.body.id);
     }
 
-    // Reorder: reverse the list.
+    // Reorder: reverse the list (all 9 questions live in RW_MODULE_1, so
+    // reordering is scoped to that module).
     const reversed = [...createdIds].reverse();
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/questions/reorder`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ orderedIds: reversed })
+      .send({ module: 'RW_MODULE_1', orderedIds: reversed })
       .expect(200);
 
     const detail = await request(app.getHttpServer())
       .get(`/quizzes/${quizId}`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    expect(detail.body.questions.map((q: { id: string }) => q.id)).toEqual(
-      reversed,
-    );
+    const rwModule1Ids = detail.body.questions
+      .filter((q: { module: string }) => q.module === 'RW_MODULE_1')
+      .map((q: { id: string }) => q.id);
+    expect(rwModule1Ids).toEqual(reversed);
+
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
 
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
@@ -189,12 +204,15 @@ describe('Quiz builder (e2e)', () => {
       .send({ status: 'PUBLISHED' })
       .expect(200);
 
-    // Mutation blocked once published.
+    // Questions can still be added after publishing — QuestionsService
+    // intentionally allows edits on a quiz in any status (see its top-of-file
+    // comment) so teachers can fix content on a live quiz; only quiz-level
+    // settings (QuizzesService.update) are locked to DRAFT.
     await request(app.getHttpServer())
       .post(`/quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send(VALID_QUESTIONS[0])
-      .expect(400);
+      .expect(201);
   });
 
   it('rejects invalid config and invalid option correctness per Zod schema / business rules', async () => {
@@ -208,7 +226,7 @@ describe('Quiz builder (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'NUMERIC', prompt: 'Bad numeric', points: 1, config: {} })
+      .send({ type: 'NUMERIC', module: 'RW_MODULE_1', prompt: 'Bad numeric', points: 1, config: {} })
       .expect(400);
 
     await request(app.getHttpServer())
@@ -216,6 +234,7 @@ describe('Quiz builder (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'MCQ_SINGLE',
+        module: 'RW_MODULE_1',
         prompt: 'Two correct',
         points: 1,
         config: {},

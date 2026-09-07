@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { QuizStatus } from '@prisma/client';
+import { QUIZ_MODULE_SEQUENCE } from '@quiz-platform/shared';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { SESSION_LOCK_TIMEOUT_MS } from '../common/session-lock.constants';
 import { PrismaService } from '../prisma/prisma.service';
@@ -70,7 +71,7 @@ export class QuizzesService {
       where: { id },
       include: {
         questions: {
-          orderBy: { order: 'asc' },
+          orderBy: [{ module: 'asc' }, { order: 'asc' }],
           include: { options: { orderBy: { order: 'asc' } } },
         },
         createdBy: { include: { user: { select: { name: true } } } },
@@ -96,10 +97,10 @@ export class QuizzesService {
         createdByMembershipId,
         title: dto.title,
         description: dto.description,
-        timeLimitSec: dto.timeLimitSec,
         maxAttempts: dto.maxAttempts,
         shuffleQuestions: dto.shuffleQuestions ?? false,
         shuffleOptions: dto.shuffleOptions ?? false,
+        showDifficultyToStudents: dto.showDifficultyToStudents ?? false,
         availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
         availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
         passMarkPercent: dto.passMarkPercent,
@@ -132,10 +133,10 @@ export class QuizzesService {
       data: {
         title: dto.title,
         description: dto.description,
-        timeLimitSec: dto.timeLimitSec,
         maxAttempts: dto.maxAttempts,
         shuffleQuestions: dto.shuffleQuestions,
         shuffleOptions: dto.shuffleOptions,
+        showDifficultyToStudents: dto.showDifficultyToStudents,
         availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
         availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
         passMarkPercent: dto.passMarkPercent,
@@ -163,28 +164,25 @@ export class QuizzesService {
         `Cannot transition a ${quiz.status} quiz to ${status}`,
       );
     }
-    if (status === QuizStatus.PUBLISHED) {
-      const questionCount = await this.prisma.question.count({
-        where: { quizId: id },
-      });
-      if (questionCount === 0) {
-        throw new BadRequestException(
-          'Cannot publish a quiz with no questions',
-        );
+    if (status === QuizStatus.PUBLISHED || status === QuizStatus.SCHEDULED) {
+      if (status === QuizStatus.SCHEDULED) {
+        if (!quiz.availableFrom || quiz.availableFrom.getTime() <= Date.now()) {
+          throw new BadRequestException(
+            'Set an "available from" date/time in the future before scheduling',
+          );
+        }
       }
-    }
-    if (status === QuizStatus.SCHEDULED) {
-      if (!quiz.availableFrom || quiz.availableFrom.getTime() <= Date.now()) {
-        throw new BadRequestException(
-          'Set an "available from" date/time in the future before scheduling',
-        );
-      }
-      const questionCount = await this.prisma.question.count({
+      const verb = status === QuizStatus.PUBLISHED ? 'publish' : 'schedule';
+      const byModule = await this.prisma.question.groupBy({
+        by: ['module'],
         where: { quizId: id },
+        _count: { _all: true },
       });
-      if (questionCount === 0) {
+      const withQuestions = new Set<string>(byModule.map((g) => g.module as string));
+      const emptyModules = QUIZ_MODULE_SEQUENCE.filter((m) => !withQuestions.has(m));
+      if (emptyModules.length > 0) {
         throw new BadRequestException(
-          'Cannot schedule a quiz with no questions',
+          `Cannot ${verb} a quiz with no questions in: ${emptyModules.join(', ')}`,
         );
       }
     }
@@ -233,7 +231,12 @@ export class QuizzesService {
   async duplicate(tenantId: string, actorMembershipId: string, id: string) {
     const source = await this.prisma.quiz.findUnique({
       where: { id },
-      include: { questions: { orderBy: { order: 'asc' }, include: { options: { orderBy: { order: 'asc' } } } } },
+      include: {
+        questions: {
+          orderBy: [{ module: 'asc' }, { order: 'asc' }],
+          include: { options: { orderBy: { order: 'asc' } } },
+        },
+      },
     });
     if (!source || source.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
@@ -245,27 +248,35 @@ export class QuizzesService {
         createdByMembershipId: actorMembershipId,
         title: `${source.title} (Copy)`,
         description: source.description,
-        timeLimitSec: source.timeLimitSec,
         maxAttempts: source.maxAttempts,
         shuffleQuestions: source.shuffleQuestions,
         shuffleOptions: source.shuffleOptions,
+        showDifficultyToStudents: source.showDifficultyToStudents,
         passMarkPercent: source.passMarkPercent ?? undefined,
         status: QuizStatus.DRAFT,
         questions: {
           create: source.questions.map((q) => ({
+            module: q.module,
             type: q.type,
             prompt: q.prompt,
             points: q.points,
             order: q.order,
             config: q.config ?? {},
+            difficulty: q.difficulty,
             attachmentKey: q.attachmentKey,
             attachmentFilename: q.attachmentFilename,
             attachmentMimeType: q.attachmentMimeType,
+            imageKey: q.imageKey,
+            imageFilename: q.imageFilename,
+            imageMimeType: q.imageMimeType,
             options: {
               create: q.options.map((o) => ({
                 text: o.text,
                 isCorrect: o.isCorrect,
                 order: o.order,
+                imageKey: o.imageKey,
+                imageFilename: o.imageFilename,
+                imageMimeType: o.imageMimeType,
               })),
             },
           })),
@@ -326,7 +337,7 @@ export class QuizzesService {
 
     const questions = await this.prisma.question.findMany({
       where: { quizId },
-      orderBy: { order: 'asc' },
+      orderBy: [{ module: 'asc' }, { order: 'asc' }],
       include: { options: { orderBy: { order: 'asc' } } },
     });
     const responseByQuestion = new Map(attempt.responses.map((r) => [r.questionId, r]));
@@ -346,10 +357,22 @@ export class QuizzesService {
         const response = responseByQuestion.get(q.id);
         return {
           questionId: q.id,
+          module: q.module,
           type: q.type,
           prompt: q.prompt,
           points: q.points,
-          options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })),
+          difficulty: q.difficulty,
+          options: q.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+            isCorrect: o.isCorrect,
+            imageFilename: o.imageFilename,
+            imageMimeType: o.imageMimeType,
+          })),
+          attachmentFilename: q.attachmentFilename,
+          attachmentMimeType: q.attachmentMimeType,
+          imageFilename: q.imageFilename,
+          imageMimeType: q.imageMimeType,
           responseId: response?.id ?? null,
           answer: response?.answer ?? null,
           fileKey: response?.fileKey ?? null,

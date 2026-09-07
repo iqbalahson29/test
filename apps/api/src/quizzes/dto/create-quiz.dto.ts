@@ -22,11 +22,6 @@ export class CreateQuizDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  timeLimitSec?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
   maxAttempts?: number;
 
   @IsOptional()
@@ -36,6 +31,10 @@ export class CreateQuizDto {
   @IsOptional()
   @IsBoolean()
   shuffleOptions?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showDifficultyToStudents?: boolean;
 
   @IsOptional()
   @IsDateString()

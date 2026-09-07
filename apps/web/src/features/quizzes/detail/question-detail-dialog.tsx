@@ -1,7 +1,10 @@
 import { Check, X } from 'lucide-react'
+import { QUIZ_MODULE_SHORT_LABELS } from '@quiz-platform/shared'
 import { questionsApi } from '../api'
 import type { QuestionDetail } from '../types'
+import { DifficultyBadge } from '@/components/difficulty-badge'
 import { DocumentViewer } from '@/components/document-viewer/document-viewer'
+import { MathText } from '@/components/math/math-text'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -27,13 +30,15 @@ export function QuestionDetailDialog({
           <>
             <DialogHeader>
               <div className="flex items-center gap-2">
+                <Badge variant="secondary">{QUIZ_MODULE_SHORT_LABELS[question.module]}</Badge>
                 <Badge variant="outline">{question.type}</Badge>
+                {question.difficulty && <DifficultyBadge difficulty={question.difficulty} />}
                 <span className="text-sm text-muted-foreground">
                   {question.points} pts
                 </span>
               </div>
               <DialogTitle className="whitespace-pre-wrap font-normal text-[14px]">
-                {question.prompt}
+                <MathText text={question.prompt} />
               </DialogTitle>
             </DialogHeader>
 
@@ -42,6 +47,14 @@ export function QuestionDetailDialog({
                 mimeType={question.attachmentMimeType}
                 filename={question.attachmentFilename}
                 path={questionsApi.attachmentUrlPath(quizId, question.id)}
+              />
+            )}
+
+            {question.imageKey && (
+              <DocumentViewer
+                mimeType={question.imageMimeType}
+                filename={question.imageFilename}
+                path={questionsApi.imageUrlPath(quizId, question.id)}
               />
             )}
 
@@ -62,7 +75,15 @@ export function QuestionDetailDialog({
                     ) : (
                       <X className="size-4 shrink-0 text-gray-300" />
                     )}
-                    <span>{o.text}</span>
+                    <span><MathText text={o.text} /></span>
+                    {o.imageKey && (
+                      <DocumentViewer
+                        mimeType={o.imageMimeType}
+                        filename={o.imageFilename}
+                        path={questionsApi.optionImageUrlPath(quizId, question.id, o.id)}
+                        imageThumbnail
+                      />
+                    )}
                   </li>
                 ))}
               </ul>

@@ -171,7 +171,7 @@ export function QuizAssignTab({ quiz }: { quiz: QuizDetail }) {
       </Card>
 
       {quiz.status === 'PUBLISHED' ? (
-        <AssignmentPanel quizId={quiz.id} />
+        <AssignmentPanel quizId={quiz.id} quizTitle={quiz.title} />
       ) : (
         <p className="text-sm text-muted-foreground">
           Publish this quiz to assign it to students or groups.

@@ -1,4 +1,5 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from '../../lib/api-client'
+import type { QuizModule } from '@quiz-platform/shared'
 import type {
   ActivityEntry,
   AttemptDetail,
@@ -43,8 +44,9 @@ export const questionsApi = {
     apiDelete<{ id: string }>(`/quizzes/${quizId}/questions/${id}`),
   duplicate: (quizId: string, id: string) =>
     apiPost<QuestionDetail>(`/quizzes/${quizId}/questions/${id}/duplicate`),
-  reorder: (quizId: string, orderedIds: string[]) =>
+  reorder: (quizId: string, module: QuizModule, orderedIds: string[]) =>
     apiPatch<{ ok: true }>(`/quizzes/${quizId}/questions/reorder`, {
+      module,
       orderedIds,
     }),
   import: (quizId: string, questions: CreateQuestionInput[]) =>
@@ -58,4 +60,8 @@ export const questionsApi = {
     ),
   attachmentUrlPath: (quizId: string, questionId: string) =>
     `/quizzes/${quizId}/questions/${questionId}/attachment-url`,
+  imageUrlPath: (quizId: string, questionId: string) =>
+    `/quizzes/${quizId}/questions/${questionId}/image-url`,
+  optionImageUrlPath: (quizId: string, questionId: string, optionId: string) =>
+    `/quizzes/${quizId}/questions/${questionId}/options/${optionId}/image-url`,
 }

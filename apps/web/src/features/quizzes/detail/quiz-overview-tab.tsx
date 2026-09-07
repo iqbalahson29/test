@@ -15,6 +15,7 @@ import {
   UserRound,
   Users,
 } from 'lucide-react'
+import { QUIZ_MODULE_SEQUENCE, QUIZ_MODULE_LABELS, TOTAL_QUIZ_TIME_LIMIT_SEC } from '@quiz-platform/shared'
 import { assignmentsApi } from '../../assignments/api'
 import { quizzesApi } from '../api'
 import type { QuestionDetail } from '../types'
@@ -24,6 +25,7 @@ import { QuestionRowMenu } from './question-row-menu'
 import type { useQuizQuickActions } from './use-quiz-quick-actions'
 import type { QuizTabKey } from './tab-key'
 import type { QuizDetail } from '../types'
+import { DifficultyBadge } from '@/components/difficulty-badge'
 import {
   Avatar,
   AvatarFallback,
@@ -91,7 +93,7 @@ export function QuizOverviewTab({
                   {quiz.attemptCount} attempts ·{' '}
                   {quiz.averageScorePercent !== null ? `${quiz.averageScorePercent}%` : '—'} avg
                   score · {summary ? summary.assignedStudents.length : '…'} assigned ·{' '}
-                  {formatDuration(quiz.timeLimitSec)} duration
+                  {formatDuration(TOTAL_QUIZ_TIME_LIMIT_SEC)} duration
                 </span>
               )}
             </div>
@@ -151,11 +153,9 @@ export function QuizOverviewTab({
                     <div>
                       <p className="text-sm text-muted-foreground">Duration</p>
                       <p className="mt-1 text-2xl font-semibold tracking-tight">
-                        {formatDuration(quiz.timeLimitSec)}
+                        {formatDuration(TOTAL_QUIZ_TIME_LIMIT_SEC)}
                       </p>
-                      <p className="mt-1 text-[12px] text-gray-400">
-                        {quiz.timeLimitSec ? 'Time limit' : 'No time limit set'}
-                      </p>
+                      <p className="mt-1 text-[12px] text-gray-400">Fixed SAT timing</p>
                     </div>
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <Clock className="size-4" />
@@ -221,6 +221,13 @@ export function QuizOverviewTab({
             <CardTitle>Questions preview</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
+            <div className="mb-1 flex flex-wrap gap-2">
+              {QUIZ_MODULE_SEQUENCE.map((m) => (
+                <Badge key={m} variant="outline" className="font-normal">
+                  {QUIZ_MODULE_LABELS[m]}: {quiz.questions.filter((q) => q.module === m).length}
+                </Badge>
+              ))}
+            </div>
             {quiz.questions.length === 0 && (
               <p className="text-sm text-muted-foreground">No questions yet.</p>
             )}
@@ -235,6 +242,7 @@ export function QuizOverviewTab({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{q.type}</Badge>
+                    {q.difficulty && <DifficultyBadge difficulty={q.difficulty} />}
                     <span className="text-[12px] text-muted-foreground">{q.points} pts</span>
                     {q.attachmentKey && (
                       <span className="flex items-center gap-1 text-[12px] text-muted-foreground">

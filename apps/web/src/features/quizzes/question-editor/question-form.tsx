@@ -1,14 +1,25 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { ALL_QUESTION_TYPES, QuestionType, getQuestionConfigSchema } from '@quiz-platform/shared'
+import {
+  ALL_QUESTION_DIFFICULTIES,
+  ALL_QUESTION_TYPES,
+  QUIZ_MODULE_SEQUENCE,
+  QUIZ_MODULE_LABELS,
+  QuestionType,
+  QuizModule,
+  getQuestionConfigSchema,
+} from '@quiz-platform/shared'
+import type { QuestionDifficulty } from '@quiz-platform/shared'
 import type { QuestionFormValue } from '../types'
 import { emptyConfigFor, emptyOptionsFor } from './config-defaults'
 import { QuestionAttachmentField } from './question-attachment-field'
+import { QuestionImageField } from './question-image-field'
 import { QuestionTypeFields } from './question-type-fields'
+import { DIFFICULTY_LABELS } from '@/components/difficulty-badge'
+import { MathTextarea } from '@/components/math/math-textarea'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -19,10 +30,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+const DIFFICULTY_UNSET = 'UNSET'
+
 export function QuestionForm({
   quizId,
   questionId,
   initial,
+  defaultModule,
   onSubmit,
   onCancel,
   submitting,
@@ -30,14 +44,22 @@ export function QuestionForm({
   quizId: string
   questionId?: string
   initial?: QuestionFormValue
+  /** Module a freshly-added question defaults to — e.g. whichever module
+   * section was active when "Add question" was clicked. Ignored when
+   * editing an existing question. */
+  defaultModule?: QuizModule
   onSubmit: (value: QuestionFormValue) => void
   onCancel: () => void
   submitting: boolean
 }) {
   const isNew = !initial
+  const [module, setModule] = useState<QuizModule>(
+    initial?.module ?? defaultModule ?? QUIZ_MODULE_SEQUENCE[0],
+  )
   const [type, setType] = useState<QuestionType>(initial?.type ?? QuestionType.MCQ_SINGLE)
   const [prompt, setPrompt] = useState(initial?.prompt ?? '')
   const [points, setPoints] = useState(initial?.points ?? '1')
+  const [difficulty, setDifficulty] = useState<QuestionDifficulty | null>(initial?.difficulty ?? null)
   const [config, setConfig] = useState<Record<string, unknown>>(
     initial?.config ?? emptyConfigFor(type),
   )
@@ -45,6 +67,7 @@ export function QuestionForm({
   const [attachment, setAttachment] = useState<QuestionFormValue['attachment']>(
     initial?.attachment ?? null,
   )
+  const [image, setImage] = useState<QuestionFormValue['image']>(initial?.image ?? null)
   const [error, setError] = useState<string | null>(null)
 
   const onTypeChange = (nextType: QuestionType) => {
@@ -68,14 +91,39 @@ export function QuestionForm({
       return
     }
 
-    onSubmit({ type, prompt, points, config: parsed.data, options, attachment })
+    onSubmit({
+      type,
+      module,
+      prompt,
+      points,
+      config: parsed.data,
+      difficulty,
+      options,
+      attachment,
+      image,
+    })
   }
 
   return (
     <Card className="rounded-md">
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="question-module">Module</Label>
+              <Select value={module} onValueChange={(v) => setModule(v as QuizModule)}>
+                <SelectTrigger id="question-module" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {QUIZ_MODULE_SEQUENCE.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {QUIZ_MODULE_LABELS[m]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="question-type">Type</Label>
               <Select
@@ -107,15 +155,36 @@ export function QuestionForm({
                 onChange={(e) => setPoints(e.target.value)}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="question-difficulty">Difficulty (optional)</Label>
+              <Select
+                value={difficulty ?? DIFFICULTY_UNSET}
+                onValueChange={(v) =>
+                  setDifficulty(v === DIFFICULTY_UNSET ? null : (v as QuestionDifficulty))
+                }
+              >
+                <SelectTrigger id="question-difficulty" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DIFFICULTY_UNSET}>Not set</SelectItem>
+                  {ALL_QUESTION_DIFFICULTIES.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {DIFFICULTY_LABELS[d]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="question-prompt">Prompt</Label>
-            <Textarea
+            <MathTextarea
               id="question-prompt"
               required
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={setPrompt}
               rows={2}
             />
           </div>
@@ -126,6 +195,15 @@ export function QuestionForm({
             onChange={setConfig}
             options={options}
             onOptionsChange={setOptions}
+            quizId={quizId}
+            questionId={questionId}
+          />
+
+          <QuestionImageField
+            quizId={quizId}
+            questionId={questionId}
+            value={image}
+            onChange={setImage}
           />
 
           <QuestionAttachmentField

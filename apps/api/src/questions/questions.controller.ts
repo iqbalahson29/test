@@ -70,6 +70,7 @@ export class QuestionsController {
     return this.questions.reorder(
       user.tenantId,
       quizId,
+      dto.module,
       dto.orderedIds,
       user.membershipId,
     );
@@ -92,6 +93,25 @@ export class QuestionsController {
     @Param('id') id: string,
   ) {
     return this.questions.getAttachmentViewUrl(user.tenantId, quizId, id);
+  }
+
+  @Get(':id/image-url')
+  getImageViewUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+  ) {
+    return this.questions.getImageViewUrl(user.tenantId, quizId, id);
+  }
+
+  @Get(':id/options/:optionId/image-url')
+  getOptionImageViewUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('quizId') quizId: string,
+    @Param('id') id: string,
+    @Param('optionId') optionId: string,
+  ) {
+    return this.questions.getOptionImageViewUrl(user.tenantId, quizId, id, optionId);
   }
 
   @Post(':id/duplicate')

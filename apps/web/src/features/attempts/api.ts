@@ -14,7 +14,8 @@ export const attemptsApi = {
     questionId: string,
     data: { answer?: unknown; fileKey?: string },
   ) => apiPatch<{ ok: true }>(`/attempts/${id}/responses/${questionId}`, data),
-  submit: (id: string) => apiPost<AttemptDetail>(`/attempts/${id}/submit`),
+  completeCurrentModule: (id: string) => apiPost<AttemptDetail>(`/attempts/${id}/modules/complete`),
+  beginNextModule: (id: string) => apiPost<AttemptDetail>(`/attempts/${id}/modules/begin-next`),
   heartbeat: (id: string) => apiPost<{ ok: true }>(`/attempts/${id}/heartbeat`),
   getUploadUrl: (
     attemptId: string,

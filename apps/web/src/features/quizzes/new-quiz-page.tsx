@@ -14,7 +14,6 @@ export function NewQuizPage() {
   const navigate = useNavigate()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [timeLimitSec, setTimeLimitSec] = useState('')
   const [maxAttempts, setMaxAttempts] = useState('')
   const [passMarkPercent, setPassMarkPercent] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +27,6 @@ export function NewQuizPage() {
       const quiz = await quizzesApi.create({
         title,
         description: description || undefined,
-        timeLimitSec: timeLimitSec ? Number(timeLimitSec) : undefined,
         maxAttempts: maxAttempts ? Number(maxAttempts) : undefined,
         passMarkPercent: passMarkPercent ? Number(passMarkPercent) : undefined,
       })
@@ -47,7 +45,9 @@ export function NewQuizPage() {
         <CardHeader>
           <p className="text-sm text-muted-foreground">
             Just the basics for now — once it's created, you'll land on the quiz page where you
-            can design and add questions whenever you're ready.
+            can design and add questions whenever you're ready. Every quiz follows the digital
+            SAT's 4-module structure (Reading &amp; Writing Module 1 &amp; 2, Math Module 1 &amp;
+            2) with fixed timing per module — there's no separate time limit to set here.
           </p>
         </CardHeader>
         <CardContent>
@@ -76,17 +76,7 @@ export function NewQuizPage() {
                 rows={2}
               />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="timeLimitSec">Time limit (sec)</Label>
-                <Input
-                  id="timeLimitSec"
-                  type="number"
-                  min="1"
-                  value={timeLimitSec}
-                  onChange={(e) => setTimeLimitSec(e.target.value)}
-                />
-              </div>
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="maxAttempts">Max attempts</Label>
                 <Input

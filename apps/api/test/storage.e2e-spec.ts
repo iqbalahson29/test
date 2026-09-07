@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules, submitAllModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
@@ -88,11 +89,14 @@ describe('Storage / file uploads (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'FILE_UPLOAD',
+        module: 'RW_MODULE_1',
         prompt: 'Upload proof.',
         points: 5,
         config: { allowedExtensions: ['txt'], maxSizeMb: 5 },
       })
       .expect(201);
+
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
 
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
@@ -138,13 +142,10 @@ describe('Storage / file uploads (e2e)', () => {
       .send({ fileKey })
       .expect(200);
 
-    const submitRes = await request(app.getHttpServer())
-      .post(`/attempts/${attemptId}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
-    const submittedQuestion = submitRes.body.questions.find(
-      (q: { id: string }) => q.id === question.body.id,
-    );
+    const submitRes = await submitAllModules(app, studentToken, attemptId);
+    const submittedQuestion = (submitRes.questions as { id: string; fileKey: string }[]).find(
+      (q) => q.id === question.body.id,
+    )!;
     expect(submittedQuestion.fileKey).toBe(fileKey);
 
     const queue = await request(app.getHttpServer())
@@ -178,11 +179,13 @@ describe('Storage / file uploads (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'FILE_UPLOAD',
+        module: 'RW_MODULE_1',
         prompt: 'x',
         points: 1,
         config: { maxSizeMb: 5 },
       })
       .expect(201);
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
@@ -213,10 +216,7 @@ describe('Storage / file uploads (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ fileKey: uploadRes.body.fileKey })
       .expect(200);
-    await request(app.getHttpServer())
-      .post(`/attempts/${start.body.id}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    await submitAllModules(app, studentToken, start.body.id);
 
     const queue = await request(app.getHttpServer())
       .get(`/quizzes/${quizId}/grading-queue`)

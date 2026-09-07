@@ -6,6 +6,8 @@ import { Download } from 'lucide-react'
 import { ApiError } from '../../lib/api-client'
 import { gradingApi } from './api'
 import type { GradingQueueItem } from './types'
+import { ExportMenu } from '@/components/export-menu'
+import { exportSectionsToPdf, exportSheetsToExcel } from '@/lib/export'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,6 +15,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const GRADING_COLUMNS = ['Student', 'Type', 'Question', 'Max points', 'Submission']
+
+function gradingExportRows(items: GradingQueueItem[]) {
+  return items.map((item) => [
+    item.studentName,
+    item.questionType === 'ESSAY' ? 'Essay' : 'File upload',
+    item.questionPrompt,
+    item.points,
+    item.questionType === 'ESSAY' ? (item.answer?.text ?? '—') : item.fileKey ? 'File attached' : '—',
+  ])
+}
 
 function GradingQueueRow({ item, quizId }: { item: GradingQueueItem; quizId: string }) {
   const queryClient = useQueryClient()
@@ -124,7 +138,7 @@ function GradingQueueRow({ item, quizId }: { item: GradingQueueItem; quizId: str
   )
 }
 
-export function GradingQueuePage() {
+export function GradingQueuePage({ quizTitle }: { quizTitle: string }) {
   const { id } = useParams<{ id: string }>()
   const { data, isLoading } = useQuery({
     queryKey: ['grading-queue', id],
@@ -132,11 +146,26 @@ export function GradingQueuePage() {
     enabled: !!id,
   })
 
+  const onExportPdf = () =>
+    exportSectionsToPdf(`${quizTitle} - grading queue`, `Grading queue — ${quizTitle}`, [
+      { columns: GRADING_COLUMNS, rows: gradingExportRows(data ?? []) },
+    ])
+
+  const onExportExcel = () =>
+    exportSheetsToExcel(`${quizTitle} - grading queue`, [
+      { name: 'Grading queue', columns: GRADING_COLUMNS, rows: gradingExportRows(data ?? []) },
+    ])
+
   return (
     <div>
-      <h1 className="mb-4 text-[17px] font-bold text-gray-900">
-        Grading queue{data && ` (${data.length} pending)`}
-      </h1>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-[17px] font-bold text-gray-900">
+          Grading queue{data && ` (${data.length} pending)`}
+        </h1>
+        {data && data.length > 0 && (
+          <ExportMenu onExportPdf={onExportPdf} onExportExcel={onExportExcel} />
+        )}
+      </div>
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (

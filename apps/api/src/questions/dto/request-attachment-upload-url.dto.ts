@@ -5,11 +5,23 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ] as const;
 
+export const ALLOWED_IMAGE_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+] as const;
+
+const ALLOWED_UPLOAD_MIME_TYPES = [
+  ...ALLOWED_ATTACHMENT_MIME_TYPES,
+  ...ALLOWED_IMAGE_MIME_TYPES,
+];
+
 export class RequestAttachmentUploadUrlDto {
   @IsString()
   @MinLength(1)
   filename: string;
 
-  @IsIn(ALLOWED_ATTACHMENT_MIME_TYPES)
+  @IsIn(ALLOWED_UPLOAD_MIME_TYPES)
   contentType: string;
 }

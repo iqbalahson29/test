@@ -3,9 +3,11 @@ import { FileText, Loader2 } from 'lucide-react'
 import { apiGet } from '@/lib/api-client'
 import { PdfViewer } from './pdf-viewer'
 import { DocxViewer } from './docx-viewer'
+import { ImageViewer } from './image-viewer'
 
 const PDF_MIME = 'application/pdf'
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
 /**
  * Renders a PDF/DOCX inline (canvas for PDF, converted HTML for DOCX) with
@@ -21,6 +23,7 @@ export function DocumentViewer({
   path,
   file,
   data: providedData,
+  imageThumbnail,
 }: {
   mimeType: string | null
   filename: string | null
@@ -29,6 +32,9 @@ export function DocumentViewer({
   /** A just-picked, not-yet-uploaded file — previewed locally, no request made. */
   file?: File
   data?: ArrayBuffer
+  /** Renders a small fixed-size square instead of a large inline preview —
+   * only meaningful when the mimeType is an image (e.g. an answer option). */
+  imageThumbnail?: boolean
 }) {
   const [data, setData] = useState<ArrayBuffer | null>(providedData ?? null)
   const [loading, setLoading] = useState(!providedData && !file && !!path)
@@ -83,27 +89,34 @@ export function DocumentViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, file, providedData])
 
+  const isImage = mimeType !== null && IMAGE_MIMES.includes(mimeType)
+
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 text-[12.5px]">
-        <FileText className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 truncate font-medium text-gray-700">
-          {filename ?? 'Document'}
-        </span>
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-          View only
-        </span>
-      </div>
-      {loading && (
+    <div className={imageThumbnail ? '' : 'space-y-2'}>
+      {!isImage && (
+        <div className="flex items-center gap-2 text-[12.5px]">
+          <FileText className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate font-medium text-gray-700">
+            {filename ?? 'Document'}
+          </span>
+          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            View only
+          </span>
+        </div>
+      )}
+      {loading && !imageThumbnail && (
         <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Loader2 className="size-3.5 animate-spin" />
-          Loading document…
+          {isImage ? 'Loading image…' : 'Loading document…'}
         </p>
       )}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && !imageThumbnail && <p className="text-sm text-destructive">{error}</p>}
       {data && mimeType === PDF_MIME && <PdfViewer data={data} />}
       {data && mimeType === DOCX_MIME && <DocxViewer data={data} />}
-      {data && mimeType !== PDF_MIME && mimeType !== DOCX_MIME && (
+      {data && isImage && (
+        <ImageViewer data={data} mimeType={mimeType!} thumbnail={imageThumbnail} />
+      )}
+      {data && mimeType !== PDF_MIME && mimeType !== DOCX_MIME && !isImage && (
         <p className="text-sm text-muted-foreground">Preview not available for this file type.</p>
       )}
     </div>

@@ -1,0 +1,16 @@
+Adaptive test
+
+feature: random selection of questions of three type: 123, while publish , should randomly select from the questions bank.
+1. SAT style 
+2. module 1 then module 2 style
+3. equation formatter 
+
+
+
+
+name and logo
+
+paywall
+
+create sample quizzes for students before paywall on landing page
+

@@ -14,6 +14,12 @@ import { AssignmentsModule } from './assignments/assignments.module';
 import { AttemptsModule } from './attempts/attempts.module';
 import { GradingModule } from './grading/grading.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PracticeQuizzesModule } from './practice-quizzes/practice-quizzes.module';
+import { PracticeQuestionsModule } from './practice-questions/questions.module';
+import { PracticeAssignmentsModule } from './practice-assignments/practice-assignments.module';
+import { PracticeAttemptsModule } from './practice-attempts/practice-attempts.module';
+import { PracticeGradingModule } from './practice-grading/practice-grading.module';
+import { PracticeAnalyticsModule } from './practice-analytics/practice-analytics.module';
 import { TenantRequestsModule } from './tenant-requests/tenant-requests.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { UsersModule } from './users/users.module';
@@ -45,6 +51,12 @@ import { NotificationsModule } from './notifications/notifications.module';
     AttemptsModule,
     GradingModule,
     AnalyticsModule,
+    PracticeQuizzesModule,
+    PracticeQuestionsModule,
+    PracticeAssignmentsModule,
+    PracticeAttemptsModule,
+    PracticeGradingModule,
+    PracticeAnalyticsModule,
     WorkspaceJoinRequestsModule,
     MemberInvitationsModule,
     DashboardModule,

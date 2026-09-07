@@ -1,4 +1,4 @@
-import type { QuestionType } from '@quiz-platform/shared'
+import type { QuestionDifficulty, QuestionType, QuizModule } from '@quiz-platform/shared'
 
 export interface ScoreDistributionBucket {
   bucket: string
@@ -10,7 +10,21 @@ export interface PerQuestionStat {
   prompt: string
   type: QuestionType
   points: string
+  difficulty: QuestionDifficulty | null
+  module: QuizModule
   percentCorrect: number | null
+  averagePercent: number | null
+}
+
+export interface DifficultyStat {
+  difficulty: QuestionDifficulty
+  questionCount: number
+  averagePercent: number | null
+}
+
+export interface ModuleStat {
+  module: QuizModule
+  questionCount: number
   averagePercent: number | null
 }
 
@@ -27,6 +41,8 @@ export interface QuizAnalytics {
   passRate: number | null
   scoreDistribution: ScoreDistributionBucket[]
   perQuestion: PerQuestionStat[]
+  byDifficulty: DifficultyStat[]
+  byModule: ModuleStat[]
 }
 
 export interface MyAttemptAnalytics {

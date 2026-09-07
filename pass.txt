@@ -1,6 +1,0 @@
-admin@admin.com
-password123
-
-superadmin@quiz-platform.test
-student@acme.test
-admin@acme.test

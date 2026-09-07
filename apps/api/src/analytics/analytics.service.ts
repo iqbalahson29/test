@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { AttemptStatus } from '@prisma/client';
+import { QUIZ_MODULE_SEQUENCE } from '@quiz-platform/shared';
 import { PrismaService } from '../prisma/prisma.service';
 
 function round2(n: number): number {
@@ -24,7 +25,7 @@ export class AnalyticsService {
   async quizAnalytics(tenantId: string, quizId: string) {
     const quiz = await this.prisma.quiz.findUnique({
       where: { id: quizId },
-      include: { questions: { orderBy: { order: 'asc' } } },
+      include: { questions: { orderBy: [{ module: 'asc' }, { order: 'asc' }] } },
     });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
@@ -84,11 +85,45 @@ export class AnalyticsService {
         prompt: q.prompt,
         type: q.type,
         points: q.points,
+        difficulty: q.difficulty,
+        module: q.module,
         percentCorrect:
           entry.count > 0 ? round2((entry.fullCredit / entry.count) * 100) : null,
         averagePercent:
           entry.count > 0 && entry.points > 0
             ? round2((entry.totalAwarded / entry.count / entry.points) * 100)
+            : null,
+      };
+    });
+
+    const byDifficulty = (['EASY', 'MEDIUM', 'HARD'] as const).map((difficulty) => {
+      const inLevel = perQuestion.filter((q) => q.difficulty === difficulty);
+      const withAverage = inLevel.filter((q) => q.averagePercent !== null);
+      return {
+        difficulty,
+        questionCount: inLevel.length,
+        averagePercent:
+          withAverage.length > 0
+            ? round2(
+                withAverage.reduce((sum, q) => sum + q.averagePercent!, 0) /
+                  withAverage.length,
+              )
+            : null,
+      };
+    });
+
+    const byModule = QUIZ_MODULE_SEQUENCE.map((module) => {
+      const inModule = perQuestion.filter((q) => q.module === module);
+      const withAverage = inModule.filter((q) => q.averagePercent !== null);
+      return {
+        module,
+        questionCount: inModule.length,
+        averagePercent:
+          withAverage.length > 0
+            ? round2(
+                withAverage.reduce((sum, q) => sum + q.averagePercent!, 0) /
+                  withAverage.length,
+              )
             : null,
       };
     });
@@ -111,6 +146,8 @@ export class AnalyticsService {
       passRate,
       scoreDistribution,
       perQuestion,
+      byDifficulty,
+      byModule,
     };
   }
 

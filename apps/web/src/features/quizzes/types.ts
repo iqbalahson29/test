@@ -1,4 +1,4 @@
-import type { QuestionType } from '@quiz-platform/shared'
+import type { QuestionDifficulty, QuestionType, QuizModule } from '@quiz-platform/shared'
 
 export type QuizStatus = 'DRAFT' | 'SCHEDULED' | 'PUBLISHED' | 'ARCHIVED'
 
@@ -20,22 +20,30 @@ export interface QuestionOption {
   text: string
   isCorrect: boolean
   order: number
+  imageKey: string | null
+  imageFilename: string | null
+  imageMimeType: string | null
 }
 
 export interface QuestionDetail {
   id: string
   quizId: string
+  module: QuizModule
   type: QuestionType
   prompt: string
   points: string // Prisma Decimal serializes to JSON as a string
   order: number
   config: Record<string, unknown>
+  difficulty: QuestionDifficulty | null
   createdAt: string
   updatedAt: string
   options: QuestionOption[]
   attachmentKey: string | null
   attachmentFilename: string | null
   attachmentMimeType: string | null
+  imageKey: string | null
+  imageFilename: string | null
+  imageMimeType: string | null
 }
 
 export interface QuizDetail {
@@ -43,10 +51,10 @@ export interface QuizDetail {
   tenantId: string
   title: string
   description: string | null
-  timeLimitSec: number | null
   maxAttempts: number | null
   shuffleQuestions: boolean
   shuffleOptions: boolean
+  showDifficultyToStudents: boolean
   availableFrom: string | null
   availableUntil: string | null
   passMarkPercent: string | null
@@ -87,10 +95,22 @@ export interface ResultRow {
 
 export interface AttemptDetailQuestion {
   questionId: string
+  module: QuizModule
   type: QuestionType
   prompt: string
   points: string
-  options: { id: string; text: string; isCorrect: boolean }[]
+  difficulty: QuestionDifficulty | null
+  options: {
+    id: string
+    text: string
+    isCorrect: boolean
+    imageFilename: string | null
+    imageMimeType: string | null
+  }[]
+  attachmentFilename: string | null
+  attachmentMimeType: string | null
+  imageFilename: string | null
+  imageMimeType: string | null
   responseId: string | null
   answer: Record<string, unknown> | null
   fileKey: string | null
@@ -116,10 +136,10 @@ export interface AttemptDetail {
 export interface CreateQuizInput {
   title: string
   description?: string
-  timeLimitSec?: number
   maxAttempts?: number
   shuffleQuestions?: boolean
   shuffleOptions?: boolean
+  showDifficultyToStudents?: boolean
   availableFrom?: string
   availableUntil?: string
   passMarkPercent?: number
@@ -132,28 +152,45 @@ export interface OptionInput {
   id?: string
   text: string
   isCorrect: boolean
+  /** Same tri-state convention as CreateQuestionInput's image* fields, for
+   * this option's own image. */
+  imageKey?: string
+  imageFilename?: string
+  imageMimeType?: string
+  /** A just-picked, not-yet-uploaded image file — previewed locally. */
+  imageFile?: File
 }
 
 export interface CreateQuestionInput {
   type: QuestionType
+  module: QuizModule
   prompt: string
   points: number
   config: Record<string, unknown>
+  /** Optional — undefined leaves it untouched on update, null clears it. */
+  difficulty?: QuestionDifficulty | null
   options?: OptionInput[]
   /** From questionsApi.getAttachmentUploadUrl, after PUTting the file to S3. */
   attachmentKey?: string
   attachmentFilename?: string
   attachmentMimeType?: string
+  /** Same tri-state convention as attachment*, for the question's image. */
+  imageKey?: string
+  imageFilename?: string
+  imageMimeType?: string
 }
 
 /** Form-local shape — `points` stays a string while being edited. */
 export interface QuestionFormValue {
   type: QuestionType
+  module: QuizModule
   prompt: string
   points: string
   config: Record<string, unknown>
+  difficulty: QuestionDifficulty | null
   options: OptionInput[]
   attachment: QuestionAttachment | null
+  image: QuestionImage | null
 }
 
 /**
@@ -163,6 +200,15 @@ export interface QuestionFormValue {
  * round trip before the question is saved.
  */
 export interface QuestionAttachment {
+  key: string
+  filename: string
+  mimeType: string
+  file?: File
+}
+
+/** Same shape as QuestionAttachment, for the question's inline image —
+ * kept as a separate type since it's a distinct field, not a reference doc. */
+export interface QuestionImage {
   key: string
   filename: string
   mimeType: string

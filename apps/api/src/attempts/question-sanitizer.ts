@@ -1,5 +1,5 @@
 import { Prisma, QuestionType } from '@prisma/client';
-import type { Question, QuestionOption } from '@prisma/client';
+import type { Question, QuestionDifficulty, QuestionOption } from '@prisma/client';
 
 type QuestionWithOptions = Question & { options: QuestionOption[] };
 
@@ -7,6 +7,8 @@ export interface SanitizedOption {
   id: string;
   text: string;
   order: number;
+  imageFilename: string | null;
+  imageMimeType: string | null;
 }
 
 export interface SanitizedQuestion {
@@ -17,8 +19,11 @@ export interface SanitizedQuestion {
   order: number;
   config: Record<string, unknown>;
   options: SanitizedOption[];
+  difficulty: QuestionDifficulty | null;
   attachmentFilename: string | null;
   attachmentMimeType: string | null;
+  imageFilename: string | null;
+  imageMimeType: string | null;
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -41,6 +46,8 @@ export function sanitizeQuestion(q: QuestionWithOptions): SanitizedQuestion {
     id: o.id,
     text: o.text,
     order: o.order,
+    imageFilename: o.imageFilename,
+    imageMimeType: o.imageMimeType,
   }));
 
   let config: Record<string, unknown> = q.config as Record<string, unknown>;
@@ -76,7 +83,10 @@ export function sanitizeQuestion(q: QuestionWithOptions): SanitizedQuestion {
     order: q.order,
     config,
     options,
+    difficulty: q.difficulty,
     attachmentFilename: q.attachmentFilename,
     attachmentMimeType: q.attachmentMimeType,
+    imageFilename: q.imageFilename,
+    imageMimeType: q.imageMimeType,
   };
 }

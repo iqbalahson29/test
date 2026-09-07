@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules, submitAllModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string) {
   const res = await request(app.getHttpServer())
@@ -32,6 +33,7 @@ async function createAssignedQuiz(
     .set('Authorization', `Bearer ${teacherToken}`)
     .send({
       type: 'MCQ_SINGLE',
+      module: 'RW_MODULE_1',
       prompt: 'Capital of France?',
       points: 2,
       config: {},
@@ -47,6 +49,7 @@ async function createAssignedQuiz(
     .set('Authorization', `Bearer ${teacherToken}`)
     .send({
       type: 'MATCHING',
+      module: 'RW_MODULE_1',
       prompt: 'Match capitals',
       points: 4,
       config: {
@@ -57,6 +60,8 @@ async function createAssignedQuiz(
       },
     })
     .expect(201);
+
+  await fillRemainingModules(app, teacherToken, quizId, ['RW_MODULE_1']);
 
   await request(app.getHttpServer())
     .patch(`/quizzes/${quizId}/status`)
@@ -117,8 +122,9 @@ describe('Attempts (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/quizzes/${createRes.body.id}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', prompt: 'x', points: 1, config: {} })
+      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {} })
       .expect(201);
+    await fillRemainingModules(app, acmeAdminToken, createRes.body.id, ['RW_MODULE_1']);
     await request(app.getHttpServer())
       .patch(`/quizzes/${createRes.body.id}/status`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
@@ -195,10 +201,8 @@ describe('Attempts (e2e)', () => {
     ).answer;
     expect(savedAnswer).toEqual({ optionId: 'whatever' });
 
-    await request(app.getHttpServer())
-      .post(`/attempts/${attemptId}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    const final = await submitAllModules(app, studentToken, attemptId);
+    expect(['SUBMITTED', 'GRADED']).toContain(final.status);
 
     await request(app.getHttpServer())
       .patch(`/attempts/${attemptId}/responses/${mcqQuestionId}`)
@@ -207,7 +211,7 @@ describe('Attempts (e2e)', () => {
       .expect(400);
 
     await request(app.getHttpServer())
-      .post(`/attempts/${attemptId}/submit`)
+      .post(`/attempts/${attemptId}/modules/complete`)
       .set('Authorization', `Bearer ${studentToken}`)
       .expect(400);
   });
@@ -227,10 +231,7 @@ describe('Attempts (e2e)', () => {
       .send({ quizId })
       .expect(201);
 
-    await request(app.getHttpServer())
-      .post(`/attempts/${first.body.id}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    await submitAllModules(app, studentToken, first.body.id);
 
     await request(app.getHttpServer())
       .post('/attempts')

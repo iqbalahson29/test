@@ -15,7 +15,9 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  NotebookPen,
   Repeat2,
+  TrendingUp,
   UserCircle,
   UserPlus,
   Users,
@@ -78,7 +80,13 @@ function getNavItems(role: 'ADMIN' | 'STUDENT'): NavItem[] {
         label: 'Quizzes',
         href: '/teacher',
         icon: ClipboardList,
-        match: (p) => p.startsWith('/teacher'),
+        match: (p) => p.startsWith('/teacher') && !p.startsWith('/teacher/practice-quizzes'),
+      },
+      {
+        label: 'Practice Quizzes',
+        href: '/teacher/practice-quizzes',
+        icon: NotebookPen,
+        match: (p) => p.startsWith('/teacher/practice-quizzes'),
       },
       { label: 'Members', href: '/admin/members', icon: Users },
       { label: 'Workspace settings', href: '/admin/workspace-settings', icon: Globe },
@@ -92,6 +100,13 @@ function getNavItems(role: 'ADMIN' | 'STUDENT'): NavItem[] {
       match: (p) => p === '/student' || p.startsWith('/student/attempts'),
     },
     { label: 'Analytics', href: '/student/analytics', icon: BarChart3 },
+    {
+      label: 'Practice Quizzes',
+      href: '/student/practice-quizzes',
+      icon: NotebookPen,
+      match: (p) => p.startsWith('/student/practice-quizzes') || p.startsWith('/student/practice-attempts'),
+    },
+    { label: 'Practice Analytics', href: '/student/practice-analytics', icon: TrendingUp },
     { label: 'Join workspace', href: '/student/join-workspace', icon: UserPlus },
   ]
 }

@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { fillRemainingModules, submitAllModules } from './module-test-helpers';
 
 async function login(app: INestApplication<App>, email: string, password = 'password123') {
   const res = await request(app.getHttpServer())
@@ -89,11 +90,14 @@ describe('Analytics (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({
         type: 'NUMERIC',
+        module: 'RW_MODULE_1',
         prompt: 'What is 2+2?',
         points: 10,
         config: { correctAnswer: 4, tolerance: 0 },
       })
       .expect(201);
+
+    await fillRemainingModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
 
     await request(app.getHttpServer())
       .patch(`/quizzes/${quizId}/status`)
@@ -118,10 +122,7 @@ describe('Analytics (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { value: 4 } })
       .expect(200);
-    await request(app.getHttpServer())
-      .post(`/attempts/${a1.body.id}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    await submitAllModules(app, studentToken, a1.body.id);
 
     // Attempt 2: wrong -> 0%.
     const a2 = await request(app.getHttpServer())
@@ -134,10 +135,7 @@ describe('Analytics (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { value: 999 } })
       .expect(200);
-    await request(app.getHttpServer())
-      .post(`/attempts/${a2.body.id}/submit`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .expect(201);
+    await submitAllModules(app, studentToken, a2.body.id);
 
     const analytics = await request(app.getHttpServer())
       .get(`/quizzes/${quizId}/analytics`)

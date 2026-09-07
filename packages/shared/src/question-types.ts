@@ -34,3 +34,15 @@ export const OPTION_BASED_TYPES: QuestionType[] = [
   QuestionType.MCQ_MULTI,
   QuestionType.TRUE_FALSE,
 ];
+
+export const QuestionDifficulty = {
+  EASY: "EASY",
+  MEDIUM: "MEDIUM",
+  HARD: "HARD",
+} as const;
+
+export type QuestionDifficulty =
+  (typeof QuestionDifficulty)[keyof typeof QuestionDifficulty];
+
+export const ALL_QUESTION_DIFFICULTIES: QuestionDifficulty[] =
+  Object.values(QuestionDifficulty);
