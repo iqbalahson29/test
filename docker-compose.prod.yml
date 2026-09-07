@@ -18,7 +18,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_API_CORS_ALLOW_ORIGIN: ${WEB_ORIGIN}
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
