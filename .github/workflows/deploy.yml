@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        run: pnpm --filter @quiz-platform/shared build
+
+      - name: Build web app
+        run: pnpm --filter @quiz-platform/web build
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload web build
+        run: |
+          rsync -avz --delete -e "ssh -i ~/.ssh/deploy_key" \
+            apps/web/dist/ \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/var/www/quiz-platform/"
+
+      - name: Deploy API and reload nginx
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" '
+            set -e
+            cd /opt/quiz-platform
+            git fetch origin
+            git reset --hard origin/main
+            docker compose -f docker-compose.prod.yml build api
+            docker compose -f docker-compose.prod.yml up -d
+            cp deploy/nginx-quiz-platform.conf /etc/nginx/sites-available/quiz-platform
+            nginx -t
+            systemctl reload nginx
+          '
