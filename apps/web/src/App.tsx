@@ -26,6 +26,7 @@ import { NewQuizPage } from './features/quizzes/new-quiz-page'
 import { QuizEditPage } from './features/quizzes/quiz-edit-page'
 import { QuizListPage } from './features/quizzes/quiz-list-page'
 import { QuizPrintView } from './features/quizzes/detail/quiz-print-view'
+import { quizzesApi } from './features/quizzes/api'
 import { PracticeAttemptPage } from './features/practice-attempts/attempt-page'
 import { MyPracticeQuizzesPage } from './features/practice-attempts/my-quizzes-page'
 import { PracticeQuizAnalyticsPage } from './features/practice-analytics/quiz-analytics-page'
@@ -46,6 +47,20 @@ import { WorkspaceSettingsPage } from './features/workspace-directory/workspace-
 import { TenantRequestsPage } from './superadmin/tenant-requests-page'
 import { UsersPage } from './superadmin/users-page'
 import { WorkspacesPage } from './superadmin/workspaces-page'
+
+/** Standalone /teacher/quizzes/:id/grading route wrapper — fetches the quiz
+ * just for its title (GradingQueuePage requires it for export
+ * filenames/headers), sharing the same ['quiz', id] cache entry
+ * QuizEditPage's tabs use. */
+function GradingRoute() {
+  const { id } = useParams()
+  const { data: quiz } = useQuery({
+    queryKey: ['quiz', id],
+    queryFn: () => quizzesApi.get(id!),
+    enabled: !!id,
+  })
+  return <GradingQueuePage quizTitle={quiz?.title ?? ''} />
+}
 
 /** Standalone /teacher/practice-quizzes/:id/grading route wrapper — fetches
  * the quiz just for its title (PracticeGradingQueuePage requires it for
@@ -209,7 +224,7 @@ function AppRoutes() {
         element={
           <ProtectedRoute role="ADMIN">
             <AppShell>
-              <GradingQueuePage />
+              <GradingRoute />
             </AppShell>
           </ProtectedRoute>
         }

@@ -1,10 +1,14 @@
 import { jsPDF } from 'jspdf'
-import autoTable, { applyPlugin } from 'jspdf-autotable'
+import autoTable, { applyPlugin, type Table } from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
 
 // autoTable() only self-registers onto a global `window.jsPDF`, which isn't
 // how we import it — apply it explicitly so `doc.getLastAutoTable()` works.
+// jspdf-autotable's types don't merge this onto the `jsPDF` class (its
+// plugin types are untyped `any`), so callers need the cast below.
 applyPlugin(jsPDF)
+
+type jsPDFWithAutoTable = jsPDF & { getLastAutoTable(): Table | null }
 
 export type CellValue = string | number | null | undefined
 
@@ -66,7 +70,7 @@ export function exportSectionsToPdf(
       margin: { left: MARGIN_X, right: MARGIN_X },
       theme: 'grid',
     })
-    cursorY = (doc.getLastAutoTable()?.finalY ?? cursorY) + 10
+    cursorY = ((doc as jsPDFWithAutoTable).getLastAutoTable()?.finalY ?? cursorY) + 10
   }
 
   doc.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`)

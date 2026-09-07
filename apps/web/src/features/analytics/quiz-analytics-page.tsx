@@ -241,7 +241,7 @@ export function QuizAnalyticsPage() {
                         value !== null ? `${value}%` : 'No graded questions yet',
                         `${item?.payload?.questionCount ?? 0} question${item?.payload?.questionCount === 1 ? '' : 's'}`,
                       ]}
-                      labelFormatter={(v: QuizModule) => QUIZ_MODULE_LABELS[v]}
+                      labelFormatter={(v) => QUIZ_MODULE_LABELS[v as QuizModule]}
                     />
                     <Bar dataKey="averagePercent" radius={[4, 4, 0, 0]}>
                       {data.byModule.map((m) => (
@@ -277,7 +277,7 @@ export function QuizAnalyticsPage() {
                         value !== null ? `${value}%` : 'No graded questions yet',
                         `${item?.payload?.questionCount ?? 0} question${item?.payload?.questionCount === 1 ? '' : 's'}`,
                       ]}
-                      labelFormatter={(v: QuestionDifficulty) => DIFFICULTY_LABELS[v]}
+                      labelFormatter={(v) => DIFFICULTY_LABELS[v as QuestionDifficulty]}
                     />
                     <Bar dataKey="averagePercent" radius={[4, 4, 0, 0]}>
                       {data.byDifficulty.map((d) => (
