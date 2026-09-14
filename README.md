@@ -118,7 +118,7 @@ docker run -d --name quiz-auth-test-pg -e POSTGRES_USER=auth_test \
   -p 127.0.0.1:55432:5432 --tmpfs /var/lib/postgresql/data postgres:16
 docker run -d --name quiz-auth-test-minio -e MINIO_ROOT_USER=auth_test_storage \
   -e MINIO_ROOT_PASSWORD=isolated-auth-test-storage -p 127.0.0.1:59000:9000 \
-  --tmpfs /data minio/minio server /data
+  --tmpfs /data quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
 
 DATABASE_URL=postgresql://auth_test:isolated-auth-tests@127.0.0.1:55432/quiz_auth_test \
   pnpm --filter @quiz-platform/api exec prisma migrate deploy

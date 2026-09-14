@@ -37,7 +37,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: docker run -d --name quiz-auth-test-minio -e MINIO_ROOT_USER=auth_test_storage -e MINIO_ROOT_PASSWORD=isolated-auth-test-storage -p 127.0.0.1:59000:9000 --tmpfs /data minio/minio server /data
+      - run: docker run -d --name quiz-auth-test-minio -e MINIO_ROOT_USER=auth_test_storage -e MINIO_ROOT_PASSWORD=isolated-auth-test-storage -p 127.0.0.1:59000:9000 --tmpfs /data quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
       - run: pnpm --filter @quiz-platform/shared build && pnpm --filter @quiz-platform/shared build:cjs
       - run: pnpm --filter @quiz-platform/api exec prisma generate && pnpm --filter @quiz-platform/api exec prisma validate
       - run: pnpm --filter @quiz-platform/api exec prisma migrate deploy
