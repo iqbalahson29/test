@@ -1,5 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AttemptStatus, PracticeQuizMode, Prisma, QuestionType } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AttemptStatus, PracticeQuizMode, Prisma } from '@prisma/client';
 import { AUTO_GRADABLE_TYPES } from '@quiz-platform/shared';
 import { PracticeAuditLogService } from '../practice-audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -8,7 +12,9 @@ import { StorageService } from '../storage/storage.service';
 import { GradePracticeResponseDto } from './dto/grade-practice-response.dto';
 import { scoreResponse } from './score-response';
 
-type QuestionWithOptions = Prisma.PracticeQuestionGetPayload<{ include: { options: true } }>;
+type QuestionWithOptions = Prisma.PracticeQuestionGetPayload<{
+  include: { options: true };
+}>;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -41,7 +47,9 @@ export class PracticeGradingService {
       },
     });
 
-    const responseByQuestion = new Map(full.responses.map((r) => [r.questionId, r]));
+    const responseByQuestion = new Map(
+      full.responses.map((r) => [r.questionId, r]),
+    );
 
     for (const question of full.quiz.questions) {
       let response = responseByQuestion.get(question.id);
@@ -85,7 +93,10 @@ export class PracticeGradingService {
       totalAwarded += awardedPoints;
       await this.prisma.practiceAttemptResponse.upsert({
         where: { attemptQuestionId: question.id },
-        update: { answer: existingAnswer as Prisma.InputJsonValue, awardedPoints },
+        update: {
+          answer: existingAnswer as Prisma.InputJsonValue,
+          awardedPoints,
+        },
         create: {
           attemptId,
           attemptQuestionId: question.id,
@@ -97,7 +108,11 @@ export class PracticeGradingService {
 
     await this.prisma.practiceAttempt.update({
       where: { id: attemptId },
-      data: { maxScore, score: round2(totalAwarded), status: AttemptStatus.GRADED },
+      data: {
+        maxScore,
+        score: round2(totalAwarded),
+        status: AttemptStatus.GRADED,
+      },
     });
   }
 
@@ -110,7 +125,10 @@ export class PracticeGradingService {
       },
     });
 
-    const maxScore = attempt.quiz.questions.reduce((sum, q) => sum + Number(q.points), 0);
+    const maxScore = attempt.quiz.questions.reduce(
+      (sum, q) => sum + Number(q.points),
+      0,
+    );
     const allGraded =
       attempt.responses.length === attempt.quiz.questions.length &&
       attempt.responses.every((r) => r.awardedPoints !== null);
@@ -159,7 +177,9 @@ export class PracticeGradingService {
     const responses = await this.prisma.practiceResponse.findMany({
       where: {
         questionId: question.id,
-        attempt: { status: { in: [AttemptStatus.SUBMITTED, AttemptStatus.GRADED] } },
+        attempt: {
+          status: { in: [AttemptStatus.SUBMITTED, AttemptStatus.GRADED] },
+        },
       },
       select: { id: true, answer: true, attemptId: true },
     });
@@ -172,7 +192,10 @@ export class PracticeGradingService {
       });
     }
 
-    return { attemptIds: new Set(responses.map((r) => r.attemptId)), count: responses.length };
+    return {
+      attemptIds: new Set(responses.map((r) => r.attemptId)),
+      count: responses.length,
+    };
   }
 
   private async getOwnQuestionWithOptions(
@@ -180,7 +203,9 @@ export class PracticeGradingService {
     quizId: string,
     questionId: string,
   ): Promise<QuestionWithOptions> {
-    const quiz = await this.prisma.practiceQuiz.findUnique({ where: { id: quizId } });
+    const quiz = await this.prisma.practiceQuiz.findUnique({
+      where: { id: quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Practice quiz not found');
     }
@@ -213,7 +238,11 @@ export class PracticeGradingService {
     questionId: string,
     actorMembershipId?: string,
   ) {
-    const question = await this.getOwnQuestionWithOptions(tenantId, quizId, questionId);
+    const question = await this.getOwnQuestionWithOptions(
+      tenantId,
+      quizId,
+      questionId,
+    );
     const { attemptIds, count } = await this.regradeQuestionResponses(question);
     for (const attemptId of attemptIds) {
       await this.recomputeAttemptTotals(attemptId);
@@ -229,8 +258,14 @@ export class PracticeGradingService {
   }
 
   /** Regrades every auto-gradable question in the practice quiz in one pass. */
-  async regradeQuiz(tenantId: string, quizId: string, actorMembershipId?: string) {
-    const quiz = await this.prisma.practiceQuiz.findUnique({ where: { id: quizId } });
+  async regradeQuiz(
+    tenantId: string,
+    quizId: string,
+    actorMembershipId?: string,
+  ) {
+    const quiz = await this.prisma.practiceQuiz.findUnique({
+      where: { id: quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Practice quiz not found');
     }
@@ -240,14 +275,15 @@ export class PracticeGradingService {
       );
     }
     const questions = await this.prisma.practiceQuestion.findMany({
-      where: { quizId, type: { in: AUTO_GRADABLE_TYPES as QuestionType[] } },
+      where: { quizId, type: { in: AUTO_GRADABLE_TYPES } },
       include: { options: true },
     });
 
     const allAttemptIds = new Set<string>();
     let totalResponses = 0;
     for (const question of questions) {
-      const { attemptIds, count } = await this.regradeQuestionResponses(question);
+      const { attemptIds, count } =
+        await this.regradeQuestionResponses(question);
       attemptIds.forEach((id) => allAttemptIds.add(id));
       totalResponses += count;
     }
@@ -279,7 +315,9 @@ export class PracticeGradingService {
       include: {
         question: true,
         attempt: {
-          include: { student: { include: { user: { select: { name: true } } } } },
+          include: {
+            student: { include: { user: { select: { name: true } } } },
+          },
         },
       },
     });
@@ -333,11 +371,15 @@ export class PracticeGradingService {
       'RESPONSE_GRADED',
       response.attempt.student.user.name,
     );
-    return this.prisma.practiceResponse.findUnique({ where: { id: responseId } });
+    return this.prisma.practiceResponse.findUnique({
+      where: { id: responseId },
+    });
   }
 
   async gradingQueue(tenantId: string, quizId: string) {
-    const quiz = await this.prisma.practiceQuiz.findUnique({ where: { id: quizId } });
+    const quiz = await this.prisma.practiceQuiz.findUnique({
+      where: { id: quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Practice quiz not found');
     }
@@ -356,7 +398,11 @@ export class PracticeGradingService {
       include: {
         question: true,
         attempt: {
-          include: { student: { include: { user: { select: { name: true, email: true } } } } },
+          include: {
+            student: {
+              include: { user: { select: { name: true, email: true } } },
+            },
+          },
         },
       },
       orderBy: { createdAt: 'asc' },

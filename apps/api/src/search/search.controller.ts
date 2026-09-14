@@ -14,7 +14,10 @@ export class SearchController {
   // 0-membership 'account' tokens too (they'll just get workspace results).
   @Get()
   @UseGuards(AuthGuard('jwt'))
-  search(@Req() req: Request & { user: AnyTokenPayload }, @Query('q') q?: string) {
+  search(
+    @Req() req: Request & { user: AnyTokenPayload },
+    @Query('q') q?: string,
+  ) {
     return this.searchService.search(req.user.sub, q ?? '');
   }
 }

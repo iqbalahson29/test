@@ -1,14 +1,17 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { TenantStatus } from '@prisma/client';
+import { Injectable } from '@nestjs/common';
+import { SessionService } from '../auth/session.service';
+import type { AnyAccessTokenPayload } from '../auth/token.types';
+import { SecurityEventsService } from '../auth/security/security-events.service';
+import { serial, authError } from '../auth/security/primitives';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class TenantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessions: SessionService,
+    private readonly events: SecurityEventsService,
+  ) {}
 
   async listForSuperAdmin() {
     const tenants = await this.prisma.tenant.findMany({
@@ -45,51 +48,81 @@ export class TenantsService {
     }));
   }
 
-  async suspend(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-    if (!tenant) {
-      throw new NotFoundException('Workspace not found');
-    }
-    if (tenant.status === TenantStatus.SUSPENDED) {
-      throw new BadRequestException('Workspace is already suspended');
-    }
-    return this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { status: TenantStatus.SUSPENDED, suspendedAt: new Date() },
+  async suspend(tenantId: string, actor: AnyAccessTokenPayload) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      const tenant = await tx.tenant.findUnique({ where: { id: tenantId } });
+      if (!tenant) throw authError('NOT_FOUND', 404);
+      if (tenant.status === 'SUSPENDED') throw authError('ALREADY_SUSPENDED');
+      const sessions = await tx.session.findMany({
+        where: { membership: { tenantId }, revokedAt: null },
+        select: { id: true },
+      });
+      for (const s of sessions)
+        await this.sessions.revoke(tx, s.id, 'tenant-suspended');
+      const updated = await tx.tenant.update({
+        where: { id: tenantId },
+        data: { status: 'SUSPENDED', suspendedAt: new Date() },
+      });
+      await this.events.record(
+        tx,
+        'TENANT_SUSPENDED',
+        actor.sub,
+        actor.sessionId,
+        { tenantId },
+      );
+      return updated;
     });
   }
-
-  async reactivate(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-    if (!tenant) {
-      throw new NotFoundException('Workspace not found');
-    }
-    if (tenant.status === TenantStatus.ACTIVE) {
-      throw new BadRequestException('Workspace is already active');
-    }
-    return this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { status: TenantStatus.ACTIVE, suspendedAt: null },
+  async reactivate(tenantId: string, actor: AnyAccessTokenPayload) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      const tenant = await tx.tenant.findUnique({ where: { id: tenantId } });
+      if (!tenant) throw authError('NOT_FOUND', 404);
+      if (tenant.status === 'ACTIVE') throw authError('ALREADY_ACTIVE');
+      const updated = await tx.tenant.update({
+        where: { id: tenantId },
+        data: { status: 'ACTIVE', suspendedAt: null },
+      });
+      await this.events.record(
+        tx,
+        'TENANT_REACTIVATED',
+        actor.sub,
+        actor.sessionId,
+        { tenantId },
+      );
+      return updated;
     });
   }
-
-  /**
-   * Permanently deletes a workspace and everything scoped to it (cascades
-   * through memberships, quizzes/questions, attempts, assignments, groups,
-   * etc. via the FK `onDelete: Cascade` relations already declared on those
-   * models). `slugConfirmation` is a server-side re-check of the same
-   * "type the slug to confirm" the client requires — the client-side check
-   * alone is just UX, not a real guard against a stray/replayed request.
-   */
-  async remove(tenantId: string, slugConfirmation: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-    if (!tenant) {
-      throw new NotFoundException('Workspace not found');
-    }
-    if (tenant.slug !== slugConfirmation) {
-      throw new BadRequestException('Workspace slug confirmation does not match');
-    }
-    await this.prisma.tenant.delete({ where: { id: tenantId } });
-    return { id: tenantId };
+  async remove(
+    tenantId: string,
+    slugConfirmation: string,
+    actor: AnyAccessTokenPayload,
+  ) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      const tenant = await tx.tenant.findUnique({ where: { id: tenantId } });
+      if (!tenant) throw authError('NOT_FOUND', 404);
+      if (tenant.slug !== slugConfirmation)
+        throw authError('INVALID_CONFIRMATION');
+      const sessions = await tx.session.findMany({
+        where: { membership: { tenantId }, revokedAt: null },
+        select: { id: true },
+      });
+      for (const s of sessions)
+        await this.sessions.revoke(tx, s.id, 'tenant-deleted');
+      await this.events.record(
+        tx,
+        'TENANT_DELETED',
+        actor.sub,
+        actor.sessionId,
+        { tenantId },
+      );
+      await tx.tenant.delete({ where: { id: tenantId } });
+      return { id: tenantId };
+    });
   }
 }

@@ -36,7 +36,9 @@ export class AssignmentsService {
       );
     }
 
-    const quiz = await this.prisma.quiz.findUnique({ where: { id: dto.quizId } });
+    const quiz = await this.prisma.quiz.findUnique({
+      where: { id: dto.quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
     }
@@ -47,10 +49,11 @@ export class AssignmentsService {
     let studentMembershipId: string | undefined = dto.studentMembershipId;
 
     if (hasEmail) {
-      const membership = await this.memberships.findOrCreateStudentMembershipByEmail(
-        tenantId,
-        dto.studentEmail!,
-      );
+      const membership =
+        await this.memberships.findOrCreateStudentMembershipByEmail(
+          tenantId,
+          dto.studentEmail!,
+        );
       studentMembershipId = membership.id;
     } else if (hasStudent) {
       const membership = await this.prisma.membership.findUnique({
@@ -63,7 +66,9 @@ export class AssignmentsService {
         throw new BadRequestException('Target membership is not a student');
       }
     } else {
-      const group = await this.prisma.group.findUnique({ where: { id: dto.groupId } });
+      const group = await this.prisma.group.findUnique({
+        where: { id: dto.groupId },
+      });
       if (!group || group.tenantId !== tenantId) {
         throw new BadRequestException('Group not found in this tenant');
       }
@@ -77,7 +82,9 @@ export class AssignmentsService {
       },
     });
     if (existing) {
-      throw new ConflictException('This quiz is already assigned to that target');
+      throw new ConflictException(
+        'This quiz is already assigned to that target',
+      );
     }
 
     const created = await this.prisma.quizAssignment.create({
@@ -92,7 +99,8 @@ export class AssignmentsService {
     });
 
     const targetName = hasGroup
-      ? (await this.prisma.group.findUnique({ where: { id: dto.groupId } }))?.name
+      ? (await this.prisma.group.findUnique({ where: { id: dto.groupId } }))
+          ?.name
       : (
           await this.prisma.membership.findUnique({
             where: { id: studentMembershipId },
@@ -205,7 +213,9 @@ export class AssignmentsService {
       include: {
         student: {
           include: {
-            user: { select: { id: true, email: true, name: true, avatarUrl: true } },
+            user: {
+              select: { id: true, email: true, name: true, avatarUrl: true },
+            },
           },
         },
         group: true,
@@ -291,14 +301,18 @@ export class AssignmentsService {
       where: { quizId },
       include: {
         student: {
-          include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+          include: {
+            user: { select: { id: true, name: true, avatarUrl: true } },
+          },
         },
         group: {
           include: {
             members: {
               include: {
                 membership: {
-                  include: { user: { select: { id: true, name: true, avatarUrl: true } } },
+                  include: {
+                    user: { select: { id: true, name: true, avatarUrl: true } },
+                  },
                 },
               },
             },
@@ -313,7 +327,10 @@ export class AssignmentsService {
     >();
     let nearestDueAt: Date | null = null;
     for (const a of assignments) {
-      if (a.dueAt && (!nearestDueAt || a.dueAt.getTime() < nearestDueAt.getTime())) {
+      if (
+        a.dueAt &&
+        (!nearestDueAt || a.dueAt.getTime() < nearestDueAt.getTime())
+      ) {
         nearestDueAt = a.dueAt;
       }
       if (a.student) {
@@ -394,7 +411,9 @@ export class AssignmentsService {
       // attempt can't start while one is IN_PROGRESS, it's necessarily
       // that in-progress attempt whenever one exists.
       const current = attempts[0];
-      const attemptsUsed = attempts.filter((x) => x.status !== 'IN_PROGRESS').length;
+      const attemptsUsed = attempts.filter(
+        (x) => x.status !== 'IN_PROGRESS',
+      ).length;
       results.push({
         assignmentId: a.id,
         quizId: a.quizId,

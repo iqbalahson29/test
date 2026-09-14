@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import request from 'supertest';
+import { request, type JsonBody } from './auth-test-helpers';
 import { App } from 'supertest/types';
 
 export const MODULE_SEQUENCE = [
@@ -50,8 +50,12 @@ export async function submitAllModules(
   studentToken: string,
   attemptId: string,
 ) {
-  let body: { status: string; questions?: unknown[] } = { status: 'IN_PROGRESS' };
-  for (let i = 0; i < MODULE_SEQUENCE.length && body.status === 'IN_PROGRESS'; i++) {
+  let body: JsonBody = { status: 'IN_PROGRESS' };
+  for (
+    let i = 0;
+    i < MODULE_SEQUENCE.length && body.status === 'IN_PROGRESS';
+    i++
+  ) {
     const complete = await request(app.getHttpServer())
       .post(`/attempts/${attemptId}/modules/complete`)
       .set('Authorization', `Bearer ${studentToken}`)
@@ -103,8 +107,12 @@ export async function submitAllPracticeModules(
   studentToken: string,
   attemptId: string,
 ) {
-  let body: { status: string; questions?: unknown[] } = { status: 'IN_PROGRESS' };
-  for (let i = 0; i < MODULE_SEQUENCE.length && body.status === 'IN_PROGRESS'; i++) {
+  let body: JsonBody = { status: 'IN_PROGRESS' };
+  for (
+    let i = 0;
+    i < MODULE_SEQUENCE.length && body.status === 'IN_PROGRESS';
+    i++
+  ) {
     const complete = await request(app.getHttpServer())
       .post(`/practice-attempts/${attemptId}/modules/complete`)
       .set('Authorization', `Bearer ${studentToken}`)

@@ -54,8 +54,8 @@ export async function validateBankCoverage(
     _count: { _all: true },
   });
   const countFor = (module: QuizModule, difficulty: QuestionDifficulty) =>
-    counts.find((c) => c.module === module && c.difficulty === difficulty)?._count
-      ._all ?? 0;
+    counts.find((c) => c.module === module && c.difficulty === difficulty)
+      ?._count._all ?? 0;
 
   const shortfalls: BankShortfall[] = [];
   for (const sharedModule of QUIZ_MODULE_SEQUENCE) {
@@ -63,14 +63,19 @@ export async function validateBankCoverage(
     // QuizModule union — identical string values to Prisma's generated
     // enum, but a nominally distinct TS type (see the same bridge in
     // practice-attempts.service.ts's toSatModule).
-    const module = sharedModule as unknown as QuizModule;
+    const module = sharedModule;
     const quota = computeDifficultyQuota(targets[module], ratio);
     for (const difficulty of ['EASY', 'MEDIUM', 'HARD'] as const) {
       const needed = quota[difficulty];
       if (needed <= 0) continue;
-      const have = countFor(module, difficulty as QuestionDifficulty);
+      const have = countFor(module, difficulty);
       if (have < needed) {
-        shortfalls.push({ module, difficulty: difficulty as QuestionDifficulty, needed, have });
+        shortfalls.push({
+          module,
+          difficulty: difficulty,
+          needed,
+          have,
+        });
       }
     }
   }

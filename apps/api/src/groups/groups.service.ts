@@ -35,7 +35,9 @@ export class GroupsService {
         members: {
           include: {
             membership: {
-              include: { user: { select: { id: true, email: true, name: true } } },
+              include: {
+                user: { select: { id: true, email: true, name: true } },
+              },
             },
           },
         },
@@ -68,7 +70,10 @@ export class GroupsService {
 
   async update(tenantId: string, id: string, dto: UpdateGroupDto) {
     await this.getOwnGroup(tenantId, id);
-    return this.prisma.group.update({ where: { id }, data: { name: dto.name } });
+    return this.prisma.group.update({
+      where: { id },
+      data: { name: dto.name },
+    });
   }
 
   async remove(tenantId: string, id: string) {
@@ -104,7 +109,9 @@ export class GroupsService {
 
   async removeMember(tenantId: string, groupId: string, membershipId: string) {
     await this.getOwnGroup(tenantId, groupId);
-    await this.prisma.groupMember.deleteMany({ where: { groupId, membershipId } });
+    await this.prisma.groupMember.deleteMany({
+      where: { groupId, membershipId },
+    });
     return { groupId, membershipId };
   }
 }

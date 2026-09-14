@@ -1,3 +1,4 @@
+import { AuthHealthPage } from './superadmin/auth-health-page'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AnyAuthRoute } from './auth/any-auth-route'
@@ -10,6 +11,7 @@ import { NoWorkspaceRoute } from './auth/no-workspace-route'
 import { ProfilePage } from './auth/profile-page'
 import { ProtectedRoute } from './auth/protected-route'
 import { RegisterPage } from './auth/register-page'
+import { SessionExpiredPage } from './auth/session-expired-page'
 import { ResetPasswordPage } from './auth/reset-password-page'
 import { RequestWorkspacePage } from './auth/request-workspace-page'
 import { WorkspaceRequestPendingPage } from './auth/workspace-request-pending-page'
@@ -92,11 +94,12 @@ function AppRoutes() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/session-expired" element={<SessionExpiredPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/request-workspace" element={<RequestWorkspacePage />} />
       <Route path="/workspace-pending" element={<WorkspaceRequestPendingPage />} />
       <Route path="/join/:slug" element={<JoinWorkspacePage />} />
-      <Route path="/accept-invite/:token" element={<AcceptInvitePage />} />
+      <Route path="/accept-invite" element={<AcceptInvitePage />} />
       <Route path="/" element={<HomeRedirect />} />
 
       <Route
@@ -148,6 +151,7 @@ function AppRoutes() {
           </SuperAdminRoute>
         }
       />
+      <Route path="/superadmin/auth-health" element={<SuperAdminRoute><AppShell><AuthHealthPage /></AppShell></SuperAdminRoute>} />
       <Route
         path="/superadmin/users"
         element={

@@ -4,13 +4,15 @@ export interface PendingInvitation {
   id: string
   email: string
   role: Role
-  token: string
+  expiresAt:string
+  deliveryStatus:string
+  deliveryError:string|null
   createdAt: string
 }
 
 export type CreateInvitationResult =
   | { status: 'added'; id: string; email: string; role: Role }
-  | { status: 'invited'; id: string; email: string; role: Role; token: string }
+  | { status: 'invited'; id: string; email: string; role: Role }
 
 export interface BulkInvitationResult {
   added: CreateInvitationResult[]
@@ -20,6 +22,7 @@ export interface BulkInvitationResult {
 
 export interface InvitationPreview {
   tenantName: string
-  email: string
+  maskedEmail: string
   role: Role
+  expiresAt:string
 }

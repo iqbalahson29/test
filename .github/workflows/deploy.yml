@@ -1,60 +1,109 @@
-name: Deploy
-
+name: Validate and deploy
 on:
+  pull_request:
   push:
     branches: [main]
-
+  workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
-  group: deploy-production
+  group: auth-release-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: auth_test
+          POSTGRES_PASSWORD: isolated-auth-tests
+          POSTGRES_DB: quiz_auth_test
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auth_test -d quiz_auth_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://auth_test:isolated-auth-tests@127.0.0.1:55432/quiz_auth_test
+      VITE_AUTH_GOOGLE_ENABLED: ${{ vars.AUTH_GOOGLE_ENABLED || 'false' }}
+      VITE_GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-
+          version: 11.24.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build shared package
-        run: pnpm --filter @quiz-platform/shared build
-
-      - name: Build web app
-        run: pnpm --filter @quiz-platform/web build
-
-      - name: Set up SSH
+      - run: pnpm install --frozen-lockfile
+      - run: docker run -d --name quiz-auth-test-minio -e MINIO_ROOT_USER=auth_test_storage -e MINIO_ROOT_PASSWORD=isolated-auth-test-storage -p 127.0.0.1:59000:9000 --tmpfs /data minio/minio server /data
+      - run: pnpm --filter @quiz-platform/shared build && pnpm --filter @quiz-platform/shared build:cjs
+      - run: pnpm --filter @quiz-platform/api exec prisma generate && pnpm --filter @quiz-platform/api exec prisma validate
+      - run: pnpm --filter @quiz-platform/api exec prisma migrate deploy
+      - run: pnpm --filter @quiz-platform/api build && pnpm --filter @quiz-platform/web build
+      - run: pnpm --filter @quiz-platform/api exec jest --runInBand
+      - run: pnpm --filter @quiz-platform/api exec jest --config test/jest-e2e.json --runInBand
+      - run: pnpm --filter @quiz-platform/api exec eslint "{src,apps,libs,test}/**/*.ts"
+      - run: pnpm --filter @quiz-platform/web lint
+      - run: pnpm --filter @quiz-platform/api exec playwright install --with-deps chromium firefox
+      - run: pnpm --filter @quiz-platform/api test:auth:browser
+      # The final runtime image is built and started here, before anything is published. A
+      # successful source build is not evidence that the image runs: the packaged Prisma
+      # client was previously absent, so the image built and then failed at container start.
+      - name: Build the final runtime image
+        run: docker build -f apps/api/Dockerfile --target runtime -t quiz-api:${{ github.sha }} .
+      - name: Build the operations image
+        run: docker build -f apps/api/Dockerfile --target operations -t quiz-ops:${{ github.sha }} .
+      - name: Start the runtime image and run an auth smoke flow
+        run: node apps/api/scripts/verify-runtime-image.mjs quiz-api:${{ github.sha }} --database-url "$DATABASE_URL"
+      - name: Check the build context for secrets
+        run: node apps/api/scripts/check-image-secrets.mjs quiz-api:${{ github.sha }}
+      - name: Record the tested image digest
+        run: |
+          mkdir -p release-manifest
+          {
+            printf 'commit=%s\n' "${{ github.sha }}"
+            printf 'runtime_image_id=%s\n' "$(docker image inspect quiz-api:${{ github.sha }} --format '{{.Id}}')"
+            printf 'operations_image_id=%s\n' "$(docker image inspect quiz-ops:${{ github.sha }} --format '{{.Id}}')"
+            printf 'spa_sha256=%s\n' "$(find apps/web/dist -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+            printf 'schema_contract=%s\n' "$(cat deploy/auth-contract-v1)"
+            printf 'google_enabled=%s\n' "${VITE_AUTH_GOOGLE_ENABLED}"
+            printf 'google_client_id=%s\n' "${VITE_GOOGLE_CLIENT_ID}"
+          } > release-manifest/release-manifest.txt
+          cat release-manifest/release-manifest.txt
+      - name: Immutable same-commit bundle
+        run: |
+          git archive HEAD -o release.tar
+          tar -rf release.tar apps/web/dist release-manifest
+          gzip release.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: release.tar.gz
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+      - name: Configure pinned SSH host identity
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
-
-      - name: Upload web build
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+      - name: Activate reviewed API and SPA pair under maintenance
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          RELEASE_ID: ${{ github.sha }}
         run: |
-          rsync -avz --delete -e "ssh -i ~/.ssh/deploy_key" \
-            apps/web/dist/ \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/var/www/quiz-platform/"
-
-      - name: Deploy API and reload nginx
-        run: |
-          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" '
-            set -e
-            cd /opt/quiz-platform
-            git fetch origin
-            git reset --hard origin/main
-            docker compose -f docker-compose.prod.yml build api
-            docker compose -f docker-compose.prod.yml up -d
-            cp deploy/nginx-quiz-platform.conf /etc/nginx/sites-available/quiz-platform
-            nginx -t
-            systemctl reload nginx
-          '
+          scp -i ~/.ssh/deploy_key release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/quiz-platform/release-$RELEASE_ID.tar.gz"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir /opt/quiz-platform/releases/$RELEASE_ID && tar -xzf /opt/quiz-platform/release-$RELEASE_ID.tar.gz -C /opt/quiz-platform/releases/$RELEASE_ID && bash /opt/quiz-platform/releases/$RELEASE_ID/deploy/release.sh $RELEASE_ID"

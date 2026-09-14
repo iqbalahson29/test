@@ -59,7 +59,12 @@ export class QuizzesController {
     @Param('id') id: string,
     @Body() dto: UpdateQuizStatusDto,
   ) {
-    return this.quizzes.updateStatus(user.tenantId, id, dto.status, user.membershipId);
+    return this.quizzes.updateStatus(
+      user.tenantId,
+      id,
+      dto.status,
+      user.membershipId,
+    );
   }
 
   @Post(':id/duplicate')
@@ -92,7 +97,12 @@ export class QuizzesController {
     @Param('id') id: string,
     @Param('attemptId') attemptId: string,
   ) {
-    return this.quizzes.releaseAttemptSession(user.tenantId, id, attemptId, user.membershipId);
+    return this.quizzes.releaseAttemptSession(
+      user.tenantId,
+      id,
+      attemptId,
+      user.membershipId,
+    );
   }
 
   @Delete(':id')

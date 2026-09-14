@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { AttemptStatus, Prisma, QuestionType } from '@prisma/client';
 import { AUTO_GRADABLE_TYPES, getAnswerSchema } from '@quiz-platform/shared';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -7,7 +11,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { GradeResponseDto } from './dto/grade-response.dto';
 
-type QuestionWithOptions = Prisma.QuestionGetPayload<{ include: { options: true } }>;
+type QuestionWithOptions = Prisma.QuestionGetPayload<{
+  include: { options: true };
+}>;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -32,7 +38,9 @@ export class GradingService {
       },
     });
 
-    const responseByQuestion = new Map(attempt.responses.map((r) => [r.questionId, r]));
+    const responseByQuestion = new Map(
+      attempt.responses.map((r) => [r.questionId, r]),
+    );
 
     for (const question of attempt.quiz.questions) {
       let response = responseByQuestion.get(question.id);
@@ -58,7 +66,10 @@ export class GradingService {
     await this.recomputeAttemptTotals(attemptId);
   }
 
-  private scoreResponse(question: QuestionWithOptions, rawAnswer: unknown): number {
+  private scoreResponse(
+    question: QuestionWithOptions,
+    rawAnswer: unknown,
+  ): number {
     const schema = getAnswerSchema(question.type);
     const parsed = schema.safeParse(rawAnswer);
     const points = Number(question.points);
@@ -79,16 +90,24 @@ export class GradingService {
           question.options.filter((o) => o.isCorrect).map((o) => o.id),
         );
         const selectedIds = (answer.optionIds as string[]) ?? [];
-        const correctSelected = selectedIds.filter((id) => correctIds.has(id)).length;
+        const correctSelected = selectedIds.filter((id) =>
+          correctIds.has(id),
+        ).length;
         const incorrectSelected = selectedIds.length - correctSelected;
         if (correctIds.size === 0) return 0;
-        const fraction = Math.max(0, correctSelected - incorrectSelected) / correctIds.size;
+        const fraction =
+          Math.max(0, correctSelected - incorrectSelected) / correctIds.size;
         return round2(points * fraction);
       }
       case QuestionType.NUMERIC: {
-        const config = question.config as { correctAnswer: number; tolerance: number };
+        const config = question.config as {
+          correctAnswer: number;
+          tolerance: number;
+        };
         const value = answer.value as number;
-        return Math.abs(value - config.correctAnswer) <= config.tolerance ? points : 0;
+        return Math.abs(value - config.correctAnswer) <= config.tolerance
+          ? points
+          : 0;
       }
       case QuestionType.SHORT_TEXT: {
         const config = question.config as {
@@ -98,16 +117,23 @@ export class GradingService {
         const normalize = (s: string) =>
           config.caseSensitive ? s.trim() : s.trim().toLowerCase();
         const target = normalize((answer.text as string) ?? '');
-        const matches = config.acceptedAnswers.some((a) => normalize(a) === target);
+        const matches = config.acceptedAnswers.some(
+          (a) => normalize(a) === target,
+        );
         return matches ? points : 0;
       }
       case QuestionType.MATCHING: {
-        const config = question.config as { pairs: { left: string; right: string }[] };
-        const selections = (answer.selections as { left: string; right: string }[]) ?? [];
+        const config = question.config as {
+          pairs: { left: string; right: string }[];
+        };
+        const selections =
+          (answer.selections as { left: string; right: string }[]) ?? [];
         let correct = 0;
         for (const pair of config.pairs) {
           if (
-            selections.some((s) => s.left === pair.left && s.right === pair.right)
+            selections.some(
+              (s) => s.left === pair.left && s.right === pair.right,
+            )
           ) {
             correct++;
           }
@@ -127,7 +153,8 @@ export class GradingService {
           const normalize = (s: string) =>
             blank.caseSensitive ? s.trim() : s.trim().toLowerCase();
           const target = normalize(given);
-          if (blank.acceptedAnswers.some((a) => normalize(a) === target)) correct++;
+          if (blank.acceptedAnswers.some((a) => normalize(a) === target))
+            correct++;
         });
         if (config.blanks.length === 0) return 0;
         return round2(points * (correct / config.blanks.length));
@@ -146,7 +173,10 @@ export class GradingService {
       },
     });
 
-    const maxScore = attempt.quiz.questions.reduce((sum, q) => sum + Number(q.points), 0);
+    const maxScore = attempt.quiz.questions.reduce(
+      (sum, q) => sum + Number(q.points),
+      0,
+    );
     const allGraded =
       attempt.responses.length === attempt.quiz.questions.length &&
       attempt.responses.every((r) => r.awardedPoints !== null);
@@ -195,7 +225,9 @@ export class GradingService {
     const responses = await this.prisma.response.findMany({
       where: {
         questionId: question.id,
-        attempt: { status: { in: [AttemptStatus.SUBMITTED, AttemptStatus.GRADED] } },
+        attempt: {
+          status: { in: [AttemptStatus.SUBMITTED, AttemptStatus.GRADED] },
+        },
       },
       select: { id: true, answer: true, attemptId: true },
     });
@@ -208,7 +240,10 @@ export class GradingService {
       });
     }
 
-    return { attemptIds: new Set(responses.map((r) => r.attemptId)), count: responses.length };
+    return {
+      attemptIds: new Set(responses.map((r) => r.attemptId)),
+      count: responses.length,
+    };
   }
 
   private async getOwnQuestionWithOptions(
@@ -244,7 +279,11 @@ export class GradingService {
     questionId: string,
     actorMembershipId?: string,
   ) {
-    const question = await this.getOwnQuestionWithOptions(tenantId, quizId, questionId);
+    const question = await this.getOwnQuestionWithOptions(
+      tenantId,
+      quizId,
+      questionId,
+    );
     const { attemptIds, count } = await this.regradeQuestionResponses(question);
     for (const attemptId of attemptIds) {
       await this.recomputeAttemptTotals(attemptId);
@@ -260,20 +299,25 @@ export class GradingService {
   }
 
   /** Regrades every auto-gradable question in the quiz in one pass. */
-  async regradeQuiz(tenantId: string, quizId: string, actorMembershipId?: string) {
+  async regradeQuiz(
+    tenantId: string,
+    quizId: string,
+    actorMembershipId?: string,
+  ) {
     const quiz = await this.prisma.quiz.findUnique({ where: { id: quizId } });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
     }
     const questions = await this.prisma.question.findMany({
-      where: { quizId, type: { in: AUTO_GRADABLE_TYPES as QuestionType[] } },
+      where: { quizId, type: { in: AUTO_GRADABLE_TYPES } },
       include: { options: true },
     });
 
     const allAttemptIds = new Set<string>();
     let totalResponses = 0;
     for (const question of questions) {
-      const { attemptIds, count } = await this.regradeQuestionResponses(question);
+      const { attemptIds, count } =
+        await this.regradeQuestionResponses(question);
       attemptIds.forEach((id) => allAttemptIds.add(id));
       totalResponses += count;
     }
@@ -305,7 +349,9 @@ export class GradingService {
       include: {
         question: true,
         attempt: {
-          include: { student: { include: { user: { select: { name: true } } } } },
+          include: {
+            student: { include: { user: { select: { name: true } } } },
+          },
         },
       },
     });
@@ -377,7 +423,11 @@ export class GradingService {
       include: {
         question: true,
         attempt: {
-          include: { student: { include: { user: { select: { name: true, email: true } } } } },
+          include: {
+            student: {
+              include: { user: { select: { name: true, email: true } } },
+            },
+          },
         },
       },
       orderBy: { createdAt: 'asc' },

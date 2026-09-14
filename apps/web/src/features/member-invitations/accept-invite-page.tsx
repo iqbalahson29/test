@@ -1,131 +1,36 @@
+import { setPostAuthRedirect } from '../../auth/post-auth-redirect'
 import { useState } from 'react'
-import type { FormEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link,useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Building2 } from 'lucide-react'
-import { ApiError } from '../../lib/api-client'
+import type { AuthResult,OtpRequired } from '@quiz-platform/shared'
+import { authOperation } from '../../auth/session-coordinator'
+import { ApiError,rememberDeviceAllowed } from '../../lib/api-transport'
 import { useAuth } from '../../auth/auth-context'
-import { memberInvitationsApi } from './api'
+import { OtpCard } from '../../auth/otp-card'
+import { ChooseWorkspaceStep } from '../../auth/choose-workspace-step'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Skeleton } from '@/components/ui/skeleton'
-
-export function AcceptInvitePage() {
-  const { token = '' } = useParams()
-  const navigate = useNavigate()
-  const { login } = useAuth()
-  const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  const { data: invite, isLoading, isError } = useQuery({
-    queryKey: ['invitation-preview', token],
-    queryFn: () => memberInvitationsApi.byToken(token),
-    retry: false,
-  })
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!invite) return
-    setError(null)
-    setSubmitting(true)
-    try {
-      await memberInvitationsApi.accept(token, name, password)
-      await login(invite.email, password)
-      navigate('/', { replace: true })
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not accept this invite')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <img src="/brand.png" alt="Test Platform" className="size-10 object-contain" />
-          <h1 className="text-lg font-semibold">Test Platform</h1>
-        </div>
-
-        <Card>
-          {isLoading ? (
-            <CardContent className="space-y-3 pt-6">
-              <Skeleton className="h-5 w-2/3" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-            </CardContent>
-          ) : isError || !invite ? (
-            <CardContent className="pt-6">
-              <Alert variant="destructive">
-                <AlertDescription>
-                  This invite is invalid or no longer available.
-                </AlertDescription>
-              </Alert>
-            </CardContent>
-          ) : (
-            <>
-              <CardHeader>
-                <h2 className="flex items-center gap-2 text-base font-semibold">
-                  <Building2 className="size-4 text-muted-foreground" />
-                  {invite.tenantName}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  You&apos;ve been invited to join as{' '}
-                  <Badge variant="outline">{invite.role}</Badge>
-                </p>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={onSubmit} className="space-y-4">
-                  {error && (
-                    <Alert variant="destructive">
-                      <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                  )}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="invite-email">Email</Label>
-                    <Input id="invite-email" value={invite.email} disabled readOnly />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="invite-name">Your name</Label>
-                    <Input
-                      id="invite-name"
-                      required
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="invite-password">Password</Label>
-                    <Input
-                      id="invite-password"
-                      type="password"
-                      required
-                      minLength={10}
-                      maxLength={72}
-                      autoComplete="new-password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      At least 10 characters, with an uppercase letter, a lowercase letter, and a
-                      number.
-                    </p>
-                  </div>
-                  <Button type="submit" disabled={submitting} className="w-full">
-                    {submitting ? 'Setting up your account…' : 'Accept invite'}
-                  </Button>
-                </form>
-              </CardContent>
-            </>
-          )}
-        </Card>
-      </div>
-    </div>
-  )
+import { PasswordInput,PasswordStrengthMeter } from '../../auth/password-field'
+interface Preview {tenantName:string;role:string;maskedEmail:string;expiresAt:string}
+let invitationToken:string|null=null
+function captureToken(){const raw=new URLSearchParams(window.location.hash.slice(1)).get('token');if(raw){invitationToken=/^[A-Za-z0-9_-]{43}$/.test(raw)?raw:null;window.history.replaceState(null,'',window.location.pathname)}return invitationToken}
+export function AcceptInvitePage(){
+  const [token]=useState(captureToken),[name,setName]=useState(''),[password,setPassword]=useState(''),[challenge,setChallenge]=useState<OtpRequired|null>(null),[notice,setNotice]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false)
+  const auth=useAuth(),navigate=useNavigate(),signedIn=['authenticated','superadmin','no-workspace'].includes(auth.status)
+  const preview=useQuery({queryKey:['invite-preview'],queryFn:()=>authOperation<Preview>('/member-invitations/inspect',{token}),enabled:!!token,retry:false,gcTime:0})
+  if(auth.status==='choosing-workspace')return <div className="max-w-md mx-auto p-8"><ChooseWorkspaceStep/></div>
+  return <main className="min-h-screen grid place-items-center bg-muted/30 p-4"><div className="w-full max-w-md rounded-xl border bg-background p-6 space-y-4">
+    <h1 className="text-xl font-semibold">Join {preview.data?.tenantName??'your workspace'}</h1>
+    {!token||preview.isError?<p role="alert">This invitation is invalid or expired. Ask your workspace administrator for a new one.</p>:challenge?<OtpCard challenge={challenge} allowRemember={rememberDeviceAllowed(challenge.challengeId)} notice={notice} onCancel={()=>{setChallenge(null);setNotice('')}} onVerify={async(code,remember)=>{const result=await authOperation<AuthResult>('/auth/otp/verify',{challengeId:challenge.challengeId,code,rememberDevice:remember},{protected:signedIn,completeSession:true});if(result.status!=='choose-workspace')navigate('/',{replace:true});invitationToken=null}}/>:preview.data?<><p className="text-sm">Invited as {preview.data.role} · {preview.data.maskedEmail}</p><form className="space-y-4" onSubmit={async e=>{e.preventDefault();setBusy(true);setError('');try{const c=await authOperation<OtpRequired>('/member-invitations/accept',{token,...(signedIn?{}:{name,password})},{protected:signedIn});setPassword('');setNotice('');setChallenge(c)}catch(e){
+        // Unlike login and step-up, this page used to reduce a 503 carrying a usable challenge
+        // to its message. Resubmitting then started a new flow and hit the send cooldown
+        // instead of recovering the existing one, so the envelope is kept here too.
+        if(e instanceof ApiError&&e.challenge){setPassword('');setError('');setNotice(e.message);setChallenge(e.challenge)}
+        else setError(e instanceof Error?e.message:'Could not accept invitation')
+      }finally{setBusy(false)}}}>
+      {!signedIn&&<><Label htmlFor="invite-name">Your name</Label><Input id="invite-name" value={name} onChange={e=>setName(e.target.value)} required/><Label htmlFor="invite-password">New password</Label><PasswordInput id="invite-password" value={password} onChange={setPassword} autoComplete="new-password"/><PasswordStrengthMeter password={password}/><p className="text-sm">Already have an account? <Link to="/login" onClick={()=>setPostAuthRedirect('/accept-invite')} className="underline">Sign in first</Link>, then return to this invitation. Keep this tab open.</p></>}
+      <p role="alert" className="text-sm text-destructive">{error}</p><Button className="w-full" disabled={busy}>{busy?'Please wait…':'Verify and accept invitation'}</Button>
+    </form></>:<p>Loading invitation…</p>}
+  </div></main>
 }

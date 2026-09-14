@@ -162,7 +162,10 @@ export class NotificationsService {
   // the many existing membership-scoped call sites elsewhere in the app
   // (assignments, grading, invitations, ...) never have to change.
 
-  async listForUser(userId: string, opts: { cursor?: string; limit?: number } = {}) {
+  async listForUser(
+    userId: string,
+    opts: { cursor?: string; limit?: number } = {},
+  ) {
     const limit = Math.min(
       Math.max(opts.limit ?? DEFAULT_LIST_LIMIT, 1),
       MAX_LIST_LIMIT,
@@ -211,7 +214,9 @@ export class NotificationsService {
   }
 
   async clearAllForUser(userId: string) {
-    await this.prisma.notification.deleteMany({ where: { recipientUserId: userId } });
+    await this.prisma.notification.deleteMany({
+      where: { recipientUserId: userId },
+    });
     return { ok: true };
   }
 

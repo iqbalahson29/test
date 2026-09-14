@@ -22,7 +22,10 @@ function round2(n: number): number {
  * PracticeGradingService's FIXED-mode grading/regrade path and the BANK-mode
  * grading path can share it without duplicating this per-type switch.
  */
-export function scoreResponse(question: ScorableQuestion, rawAnswer: unknown): number {
+export function scoreResponse(
+  question: ScorableQuestion,
+  rawAnswer: unknown,
+): number {
   const schema = getAnswerSchema(question.type);
   const parsed = schema.safeParse(rawAnswer);
   const points = Number(question.points);
@@ -43,16 +46,24 @@ export function scoreResponse(question: ScorableQuestion, rawAnswer: unknown): n
         question.options.filter((o) => o.isCorrect).map((o) => o.id),
       );
       const selectedIds = (answer.optionIds as string[]) ?? [];
-      const correctSelected = selectedIds.filter((id) => correctIds.has(id)).length;
+      const correctSelected = selectedIds.filter((id) =>
+        correctIds.has(id),
+      ).length;
       const incorrectSelected = selectedIds.length - correctSelected;
       if (correctIds.size === 0) return 0;
-      const fraction = Math.max(0, correctSelected - incorrectSelected) / correctIds.size;
+      const fraction =
+        Math.max(0, correctSelected - incorrectSelected) / correctIds.size;
       return round2(points * fraction);
     }
     case QuestionType.NUMERIC: {
-      const config = question.config as { correctAnswer: number; tolerance: number };
+      const config = question.config as {
+        correctAnswer: number;
+        tolerance: number;
+      };
       const value = answer.value as number;
-      return Math.abs(value - config.correctAnswer) <= config.tolerance ? points : 0;
+      return Math.abs(value - config.correctAnswer) <= config.tolerance
+        ? points
+        : 0;
     }
     case QuestionType.SHORT_TEXT: {
       const config = question.config as {
@@ -62,15 +73,22 @@ export function scoreResponse(question: ScorableQuestion, rawAnswer: unknown): n
       const normalize = (s: string) =>
         config.caseSensitive ? s.trim() : s.trim().toLowerCase();
       const target = normalize((answer.text as string) ?? '');
-      const matches = config.acceptedAnswers.some((a) => normalize(a) === target);
+      const matches = config.acceptedAnswers.some(
+        (a) => normalize(a) === target,
+      );
       return matches ? points : 0;
     }
     case QuestionType.MATCHING: {
-      const config = question.config as { pairs: { left: string; right: string }[] };
-      const selections = (answer.selections as { left: string; right: string }[]) ?? [];
+      const config = question.config as {
+        pairs: { left: string; right: string }[];
+      };
+      const selections =
+        (answer.selections as { left: string; right: string }[]) ?? [];
       let correct = 0;
       for (const pair of config.pairs) {
-        if (selections.some((s) => s.left === pair.left && s.right === pair.right)) {
+        if (
+          selections.some((s) => s.left === pair.left && s.right === pair.right)
+        ) {
           correct++;
         }
       }
@@ -89,7 +107,8 @@ export function scoreResponse(question: ScorableQuestion, rawAnswer: unknown): n
         const normalize = (s: string) =>
           blank.caseSensitive ? s.trim() : s.trim().toLowerCase();
         const target = normalize(given);
-        if (blank.acceptedAnswers.some((a) => normalize(a) === target)) correct++;
+        if (blank.acceptedAnswers.some((a) => normalize(a) === target))
+          correct++;
       });
       if (config.blanks.length === 0) return 0;
       return round2(points * (correct / config.blanks.length));

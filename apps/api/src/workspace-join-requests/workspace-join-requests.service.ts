@@ -28,7 +28,9 @@ function randomJoinCode(): string {
 }
 
 function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+  );
 }
 
 @Injectable()
@@ -89,9 +91,13 @@ export class WorkspaceJoinRequestsService {
       where: { id: tenantId },
       data: {
         description:
-          dto.description !== undefined ? dto.description.trim() || null : undefined,
+          dto.description !== undefined
+            ? dto.description.trim() || null
+            : undefined,
         bannerImageUrl:
-          dto.bannerImageUrl !== undefined ? dto.bannerImageUrl || null : undefined,
+          dto.bannerImageUrl !== undefined
+            ? dto.bannerImageUrl || null
+            : undefined,
       },
       select: {
         id: true,
@@ -101,7 +107,12 @@ export class WorkspaceJoinRequestsService {
         bannerImageUrl: true,
       },
     });
-    await this.auditLog.log(tenantId, null, actorMembershipId, 'WORKSPACE_PROFILE_UPDATED');
+    await this.auditLog.log(
+      tenantId,
+      null,
+      actorMembershipId,
+      'WORKSPACE_PROFILE_UPDATED',
+    );
     return updated;
   }
 
@@ -134,7 +145,9 @@ export class WorkspaceJoinRequestsService {
       return updated;
     } catch (err) {
       if (isUniqueConstraintError(err)) {
-        throw new ConflictException('That code is already in use — try another one');
+        throw new ConflictException(
+          'That code is already in use — try another one',
+        );
       }
       throw err;
     }
@@ -169,7 +182,9 @@ export class WorkspaceJoinRequestsService {
         }
       }
     }
-    throw new ConflictException('Could not generate a unique code — please try again');
+    throw new ConflictException(
+      'Could not generate a unique code — please try again',
+    );
   }
 
   async clearJoinCode(tenantId: string, actorMembershipId: string | null) {
@@ -225,14 +240,26 @@ export class WorkspaceJoinRequestsService {
     // A code-based join is instant, so any stray pending request for the
     // same workspace would otherwise sit there showing "Pending" forever.
     await this.prisma.workspaceJoinRequest.deleteMany({
-      where: { userId, tenantId: tenant.id, status: TenantRequestStatus.PENDING },
+      where: {
+        userId,
+        tenantId: tenant.id,
+        status: TenantRequestStatus.PENDING,
+      },
     });
 
-    await this.auditLog.log(tenant.id, null, null, 'MEMBER_JOINED', user?.name ?? undefined);
+    await this.auditLog.log(
+      tenant.id,
+      null,
+      null,
+      'MEMBER_JOINED',
+      user?.name ?? undefined,
+    );
     await this.notifications.notifyAdmins(tenant.id, {
       type: 'MEMBER_JOINED',
       title: 'New member joined',
-      body: user?.name ? `${user.name} joined the workspace.` : 'A new member joined the workspace.',
+      body: user?.name
+        ? `${user.name} joined the workspace.`
+        : 'A new member joined the workspace.',
       link: '/admin/members',
     });
 
@@ -283,7 +310,9 @@ export class WorkspaceJoinRequestsService {
   }
 
   async create(userId: string, tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
     if (!tenant) {
       throw new NotFoundException('Workspace not found');
     }
@@ -299,7 +328,9 @@ export class WorkspaceJoinRequestsService {
       where: { userId, tenantId, status: TenantRequestStatus.PENDING },
     });
     if (existingPending) {
-      throw new ConflictException('You already have a pending request for this workspace');
+      throw new ConflictException(
+        'You already have a pending request for this workspace',
+      );
     }
 
     return this.prisma.workspaceJoinRequest.create({
@@ -347,7 +378,11 @@ export class WorkspaceJoinRequestsService {
     }));
   }
 
-  async approve(tenantId: string, requestId: string, actorMembershipId: string | null) {
+  async approve(
+    tenantId: string,
+    requestId: string,
+    actorMembershipId: string | null,
+  ) {
     const request = await this.getPendingRequestOrThrow(tenantId, requestId);
 
     // Guard against the student having been separately added (e.g. via
@@ -392,7 +427,11 @@ export class WorkspaceJoinRequestsService {
     return updated;
   }
 
-  async reject(tenantId: string, requestId: string, actorMembershipId: string | null) {
+  async reject(
+    tenantId: string,
+    requestId: string,
+    actorMembershipId: string | null,
+  ) {
     const request = await this.getPendingRequestOrThrow(tenantId, requestId);
     const updated = await this.prisma.workspaceJoinRequest.update({
       where: { id: requestId },

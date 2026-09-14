@@ -1,4 +1,4 @@
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+import { normalizeIdentifier } from '@quiz-platform/shared'
 
 export function validateRequired(value: string, label: string): string | undefined {
   return value.trim() ? undefined : `${label} is required`
@@ -6,7 +6,7 @@ export function validateRequired(value: string, label: string): string | undefin
 
 export function validateEmail(value: string): string | undefined {
   if (!value.trim()) return 'Email is required'
-  if (!EMAIL_PATTERN.test(value.trim())) return 'Enter a valid email address'
+  try { normalizeIdentifier(value) } catch { return 'Enter a valid email address' }
   return undefined
 }
 

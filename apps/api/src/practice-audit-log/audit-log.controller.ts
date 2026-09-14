@@ -14,9 +14,13 @@ export class PracticeAuditLogController {
   constructor(private readonly auditLog: PracticeAuditLogService) {}
 
   @Get('recent')
-  recent(@CurrentUser() user: AccessTokenPayload, @Query('limit') limit?: string) {
+  recent(
+    @CurrentUser() user: AccessTokenPayload,
+    @Query('limit') limit?: string,
+  ) {
     const parsed = limit ? Number.parseInt(limit, 10) : NaN;
-    const take = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : undefined;
+    const take =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : undefined;
     return this.auditLog.listForTenant(user.tenantId, take);
   }
 }

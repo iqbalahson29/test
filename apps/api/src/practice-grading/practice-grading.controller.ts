@@ -50,11 +50,19 @@ export class PracticeGradingController {
     @Param('id') id: string,
     @Body() dto: GradePracticeResponseDto,
   ) {
-    return this.grading.gradeResponse(user.tenantId, id, user.membershipId, dto);
+    return this.grading.gradeResponse(
+      user.tenantId,
+      id,
+      user.membershipId,
+      dto,
+    );
   }
 
   @Get('practice-responses/:id/download-url')
-  getDownloadUrl(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+  getDownloadUrl(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
     return this.grading.getDownloadUrl(user.tenantId, id);
   }
 }

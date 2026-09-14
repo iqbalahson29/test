@@ -4,7 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PracticeQuizMode, Prisma, QuestionDifficulty, QuestionType, QuizModule } from '@prisma/client';
+import {
+  PracticeQuizMode,
+  Prisma,
+  QuestionDifficulty,
+  QuestionType,
+  QuizModule,
+} from '@prisma/client';
 import {
   getQuestionConfigSchema,
   OPTION_BASED_TYPES,
@@ -36,7 +42,9 @@ export class PracticeQuestionsService {
    * stays in sync; scores themselves only change via an explicit regrade.
    */
   private async getOwnPracticeQuiz(tenantId: string, quizId: string) {
-    const quiz = await this.prisma.practiceQuiz.findUnique({ where: { id: quizId } });
+    const quiz = await this.prisma.practiceQuiz.findUnique({
+      where: { id: quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Practice quiz not found');
     }
@@ -59,7 +67,9 @@ export class PracticeQuestionsService {
       );
     }
     if (!difficulty) {
-      throw new BadRequestException('difficulty is required for a question-bank quiz');
+      throw new BadRequestException(
+        'difficulty is required for a question-bank quiz',
+      );
     }
   }
 
@@ -174,7 +184,11 @@ export class PracticeQuestionsService {
   > {
     if (dto.attachmentKey === undefined) return {};
     if (dto.attachmentKey === '') {
-      return { attachmentKey: null, attachmentFilename: null, attachmentMimeType: null };
+      return {
+        attachmentKey: null,
+        attachmentFilename: null,
+        attachmentMimeType: null,
+      };
     }
     return {
       attachmentKey: dto.attachmentKey,
@@ -188,7 +202,10 @@ export class PracticeQuestionsService {
     imageKey?: string;
     imageFilename?: string;
     imageMimeType?: string;
-  }): Pick<Prisma.PracticeQuestionUpdateInput, 'imageKey' | 'imageFilename' | 'imageMimeType'> {
+  }): Pick<
+    Prisma.PracticeQuestionUpdateInput,
+    'imageKey' | 'imageFilename' | 'imageMimeType'
+  > {
     if (dto.imageKey === undefined) return {};
     if (dto.imageKey === '') {
       return { imageKey: null, imageFilename: null, imageMimeType: null };
@@ -280,7 +297,10 @@ export class PracticeQuestionsService {
         where: { quizId, module: dto.module },
         _max: { order: true },
       });
-      moduleUpdate = { module: dto.module, order: (maxOrder._max.order ?? -1) + 1 };
+      moduleUpdate = {
+        module: dto.module,
+        order: (maxOrder._max.order ?? -1) + 1,
+      };
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -297,11 +317,15 @@ export class PracticeQuestionsService {
         });
         const existingIds = new Set(existingOptions.map((o) => o.id));
         const keptIds = new Set(
-          dto.options.filter((o) => o.id && existingIds.has(o.id)).map((o) => o.id!),
+          dto.options
+            .filter((o) => o.id && existingIds.has(o.id))
+            .map((o) => o.id!),
         );
         const removedIds = [...existingIds].filter((id) => !keptIds.has(id));
         if (removedIds.length > 0) {
-          await tx.practiceQuestionOption.deleteMany({ where: { id: { in: removedIds } } });
+          await tx.practiceQuestionOption.deleteMany({
+            where: { id: { in: removedIds } },
+          });
         }
         for (let i = 0; i < dto.options.length; i++) {
           const o = dto.options[i];
@@ -431,7 +455,9 @@ export class PracticeQuestionsService {
   ) {
     const quiz = await this.getOwnPracticeQuiz(tenantId, quizId);
 
-    const created: Awaited<ReturnType<PracticeQuestionsService['createRow']>>[] = [];
+    const created: Awaited<
+      ReturnType<PracticeQuestionsService['createRow']>
+    >[] = [];
     const errors: { row: number; message: string }[] = [];
 
     for (let i = 0; i < dtos.length; i++) {
@@ -514,7 +540,10 @@ export class PracticeQuestionsService {
 
     await this.prisma.$transaction(
       orderedIds.map((id, index) =>
-        this.prisma.practiceQuestion.update({ where: { id }, data: { order: index } }),
+        this.prisma.practiceQuestion.update({
+          where: { id },
+          data: { order: index },
+        }),
       ),
     );
     await this.auditLog.log(
@@ -539,11 +568,18 @@ export class PracticeQuestionsService {
     await this.getOwnPracticeQuiz(tenantId, quizId);
     const safeFilename = dto.filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const attachmentKey = `practice-quizzes/${quizId}/question-attachments/${randomUUID()}-${safeFilename}`;
-    const uploadUrl = await this.storage.getUploadUrl(attachmentKey, dto.contentType);
+    const uploadUrl = await this.storage.getUploadUrl(
+      attachmentKey,
+      dto.contentType,
+    );
     return { uploadUrl, attachmentKey };
   }
 
-  async getAttachmentViewUrl(tenantId: string, quizId: string, questionId: string) {
+  async getAttachmentViewUrl(
+    tenantId: string,
+    quizId: string,
+    questionId: string,
+  ) {
     await this.getOwnPracticeQuiz(tenantId, quizId);
     const question = await this.prisma.practiceQuestion.findUnique({
       where: { id: questionId },
@@ -558,7 +594,11 @@ export class PracticeQuestionsService {
       question.attachmentKey,
       question.attachmentFilename ?? 'document',
     );
-    return { viewUrl, filename: question.attachmentFilename, mimeType: question.attachmentMimeType };
+    return {
+      viewUrl,
+      filename: question.attachmentFilename,
+      mimeType: question.attachmentMimeType,
+    };
   }
 
   async getImageViewUrl(tenantId: string, quizId: string, questionId: string) {
@@ -576,7 +616,11 @@ export class PracticeQuestionsService {
       question.imageKey,
       question.imageFilename ?? 'image',
     );
-    return { viewUrl, filename: question.imageFilename, mimeType: question.imageMimeType };
+    return {
+      viewUrl,
+      filename: question.imageFilename,
+      mimeType: question.imageMimeType,
+    };
   }
 
   async getOptionImageViewUrl(
@@ -590,13 +634,24 @@ export class PracticeQuestionsService {
       where: { id: optionId },
       include: { question: true },
     });
-    if (!option || option.question.quizId !== quizId || option.questionId !== questionId) {
+    if (
+      !option ||
+      option.question.quizId !== quizId ||
+      option.questionId !== questionId
+    ) {
       throw new NotFoundException('Option not found');
     }
     if (!option.imageKey) {
       throw new NotFoundException('This option has no image');
     }
-    const viewUrl = await this.storage.getViewUrl(option.imageKey, option.imageFilename ?? 'image');
-    return { viewUrl, filename: option.imageFilename, mimeType: option.imageMimeType };
+    const viewUrl = await this.storage.getViewUrl(
+      option.imageKey,
+      option.imageFilename ?? 'image',
+    );
+    return {
+      viewUrl,
+      filename: option.imageFilename,
+      mimeType: option.imageMimeType,
+    };
   }
 }

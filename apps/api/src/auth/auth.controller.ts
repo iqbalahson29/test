@@ -1,285 +1,584 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
-  HttpStatus,
+  Param,
   Patch,
   Post,
+  Query,
   Req,
   Res,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { AUTH_THROTTLE } from '../common/auth-throttle.constant';
 import { AuthService } from './auth.service';
-import { CurrentUser } from './current-user.decorator';
-import { EnterWorkspaceDto } from './dto/enter-workspace.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { LoginDto } from './dto/login.dto';
-import { RegisterDto } from './dto/register.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
-import { SelectWorkspaceDto } from './dto/select-workspace.dto';
-import { SwitchWorkspaceDto } from './dto/switch-workspace.dto';
-import { UpdateProfileDto } from './dto/update-profile.dto';
-import { JwtAuthGuard } from './jwt-auth.guard';
+import { AuthCookies } from './security/cookies';
+import { AnyAccessTokenPayload } from './token.types';
+import { OptionalAccessGuard } from './security/optional-access.guard';
+import { SessionOutput, SessionService } from './session.service';
+import { OtpService } from './otp.service';
+import { CredentialsService } from './credentials.service';
+import { GoogleService } from './google.service';
+import { RateLimitsService } from './security/rate-limits.service';
+import { AuthClock, authError, serial } from './security/primitives';
+import { PrismaService } from '../prisma/prisma.service';
+import { MailerService } from '../mailer/mailer.service';
 import { SuperAdminGuard } from './super-admin.guard';
-import type { AccessTokenPayload, AnyTokenPayload } from './token.types';
-
-const REFRESH_COOKIE = 'refresh_token';
-const REFRESH_COOKIE_OPTIONS = {
-  httpOnly: true,
-  sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production',
-  // Not scoped to e.g. /auth: the browser's view of the path depends on
-  // how the frontend proxies API calls (dev: /api/auth/..., prod: maybe
-  // no prefix at all), so root is the only path that's always correct.
-  path: '/',
-};
-
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { parse, schemas } from './auth.schemas';
+type AuthRequest = Request & { user: AnyAccessTokenPayload };
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
-
-  // Tighter than the global default: these are the routes brute-force /
-  // credential-stuffing attempts actually target.
-  @Throttle(AUTH_THROTTLE)
-  @Post('register')
-  @HttpCode(HttpStatus.CREATED)
-  register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
-  }
-
-  @Throttle(AUTH_THROTTLE)
-  @Post('login')
-  @HttpCode(HttpStatus.OK)
-  async login(
-    @Body() dto: LoginDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const user = await this.authService.validateUser(dto.email, dto.password);
-    const result = await this.authService.login(user.id);
-
-    if (result.status === 'choose-workspace') {
-      // No refresh cookie yet — the session isn't established until a
-      // workspace is chosen via /auth/select-workspace.
-      return {
-        status: 'choose-workspace',
-        selectionToken: result.selectionToken,
-        choices: result.choices,
-      };
+  constructor(
+    private readonly auth: AuthService,
+    private readonly cookies: AuthCookies,
+    private readonly sessions: SessionService,
+    private readonly otp: OtpService,
+    private readonly credentials: CredentialsService,
+    private readonly google: GoogleService,
+    private readonly rates: RateLimitsService,
+    private readonly db: PrismaService,
+    private readonly mail: MailerService,
+    private readonly clock: AuthClock,
+  ) {}
+  output(res: Response, output: SessionOutput | { result: unknown }) {
+    if ('refreshToken' in output && output.refreshToken)
+      this.cookies.set(
+        res,
+        'refresh_token',
+        output.refreshToken,
+        output.refreshExpiresAt!.getTime() - this.clock.now().getTime(),
+      );
+    if ('contextToken' in output && output.contextToken) {
+      this.cookies.set(res, 'auth_context', output.contextToken, 600000);
+      if (output.result.status === 'choose-workspace')
+        this.cookies.clear(res, 'refresh_token');
     }
-
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    if (result.status === 'ok') {
-      return {
-        status: 'ok',
-        accessToken: result.accessToken,
-        membership: result.membership,
-      };
-    }
-    if (result.status === 'no-workspace') {
-      return { status: 'no-workspace', accessToken: result.accessToken };
-    }
-    return { status: 'superadmin', accessToken: result.accessToken };
+    if ('clearDevice' in output && output.clearDevice)
+      this.cookies.clear(res, 'device_token');
+    if ('deviceToken' in output && output.deviceToken)
+      this.cookies.set(
+        res,
+        'device_token',
+        output.deviceToken,
+        output.deviceExpiresAt!.getTime() - this.clock.now().getTime(),
+      );
+    if ('rememberDeviceAllowed' in output)
+      res.setHeader(
+        'X-Quiz-Remember-Device',
+        String(output.rememberDeviceAllowed),
+      );
+    return output.result;
   }
-
-  // Same throttle as login/register — the endpoint an attacker would hammer
-  // to spam a target's inbox or brute-force enumerate registered emails.
-  @Throttle(AUTH_THROTTLE)
-  @Post('forgot-password')
-  @HttpCode(HttpStatus.OK)
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto.email);
-  }
-
-  @Throttle(AUTH_THROTTLE)
-  @Post('reset-password')
-  @HttpCode(HttpStatus.OK)
-  resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto.token, dto.newPassword);
-  }
-
-  @Post('select-workspace')
-  @HttpCode(HttpStatus.OK)
-  async selectWorkspace(
-    @Body() dto: SelectWorkspaceDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.authService.selectWorkspace(
-      dto.selectionToken,
-      dto.membershipId,
-    );
-    // selectWorkspace() never actually resolves any other status — this
-    // just satisfies the shared LoginResult return type.
-    if (result.status !== 'ok') {
-      throw new UnauthorizedException();
-    }
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    return {
-      status: 'ok',
-      accessToken: result.accessToken,
-      membership: result.membership,
-    };
-  }
-
-  @Post('switch-workspace')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
-  async switchWorkspace(
-    @CurrentUser() user: AccessTokenPayload,
-    @Body() dto: SwitchWorkspaceDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.authService.switchWorkspace(
-      user.sub,
-      dto.membershipId,
-    );
-    // switchWorkspace() never actually resolves any other status — this
-    // just satisfies the shared LoginResult return type.
-    if (result.status !== 'ok') {
-      throw new UnauthorizedException();
-    }
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    return {
-      status: 'ok',
-      accessToken: result.accessToken,
-      membership: result.membership,
-    };
-  }
-
-  // AuthGuard('jwt') here, not JwtAuthGuard — a super admin's token is
-  // 'superadmin', not 'access'.
-  @Post('enter-workspace')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
-  async enterWorkspace(
-    @Req() req: Request & { user: AnyTokenPayload },
-    @Body() dto: EnterWorkspaceDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.authService.enterWorkspace(
-      req.user.sub,
-      dto.tenantId,
-    );
-    // enterWorkspace() never actually resolves any other status — this
-    // just satisfies the shared LoginResult return type.
-    if (result.status !== 'ok') {
-      throw new UnauthorizedException();
-    }
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    return {
-      status: 'ok',
-      accessToken: result.accessToken,
-      membership: result.membership,
-    };
-  }
-
-  @Post('exit-workspace')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
-  async exitWorkspace(
-    @CurrentUser() user: AccessTokenPayload,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.authService.exitToSuperAdmin(user.sub);
-    // exitToSuperAdmin() never actually resolves any other status — this
-    // just satisfies the shared LoginResult return type.
-    if (result.status !== 'superadmin') {
-      throw new UnauthorizedException();
-    }
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    return { status: 'superadmin', accessToken: result.accessToken };
-  }
-
-  @Get('my-memberships')
-  @UseGuards(JwtAuthGuard)
-  myMemberships(@CurrentUser() user: AccessTokenPayload) {
-    return this.authService.myMemberships(user.sub);
-  }
-
-  @Post('refresh')
-  @HttpCode(HttpStatus.OK)
-  async refresh(
+  @Post('context')
+  @HttpCode(200)
+  async context(
+    @Body() b: unknown,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const token = req.cookies?.[REFRESH_COOKIE] as string | undefined;
-    if (!token) {
-      throw new UnauthorizedException('No refresh token');
-    }
-    const result = await this.authService.refresh(token);
-    res.cookie(REFRESH_COOKIE, result.refreshToken, REFRESH_COOKIE_OPTIONS);
-    if (result.status === 'ok') {
-      return {
-        status: 'ok',
-        accessToken: result.accessToken,
-        membership: result.membership,
-      };
-    }
-    if (result.status === 'no-workspace') {
-      return { status: 'no-workspace', accessToken: result.accessToken };
-    }
-    return { status: 'superadmin', accessToken: result.accessToken };
+    parse(schemas.empty, b);
+    await this.rates.gate('context', req.ip ?? '', 30);
+    this.cookies.ensure(req, res);
+    return { status: 'ok' };
   }
-
-  // AuthGuard('jwt') here, not JwtAuthGuard — this route must accept
-  // 'access', 'superadmin', and 'account' token payloads alike.
-  @Get('me')
-  @UseGuards(AuthGuard('jwt'))
-  me(@Req() req: Request & { user: AnyTokenPayload }) {
-    if (req.user.type === 'superadmin') {
-      return { status: 'superadmin' };
-    }
-    if (req.user.type === 'access') {
-      return { status: 'ok', membershipId: req.user.membershipId };
-    }
-    if (req.user.type === 'account') {
-      return { status: 'no-workspace' };
-    }
-    throw new UnauthorizedException();
-  }
-
-  // Bare AuthGuard('jwt'), not JwtAuthGuard — profile editing must work for
-  // 'account' tokens (no membership yet) as well as 'access' ones.
-  @Get('profile')
-  @UseGuards(AuthGuard('jwt'))
-  getProfile(@Req() req: Request & { user: AnyTokenPayload }) {
-    const membershipId =
-      req.user.type === 'access' ? req.user.membershipId : undefined;
-    return this.authService.getProfile(req.user.sub, membershipId);
-  }
-
-  // Tighter than the global default — this is the endpoint that verifies a
-  // guessed currentPassword, so it's the natural brute-force target.
-  @Throttle(AUTH_THROTTLE)
-  @Patch('profile')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(AuthGuard('jwt'))
-  async updateProfile(
-    @Req() req: Request & { user: AnyTokenPayload },
-    @Body() dto: UpdateProfileDto,
+  @Post('login')
+  @HttpCode(200)
+  async login(
+    @Body() b: unknown,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { profile, tokens } = await this.authService.updateProfile(req.user, dto);
-    if (tokens) {
-      // The password just changed — this re-issues *this* session's own
-      // tokens on the new tokenVersion (see AuthService.updateProfile), so
-      // only this session survives; every other one is logged out the next
-      // time it tries to refresh.
-      res.cookie(REFRESH_COOKIE, tokens.refreshToken, REFRESH_COOKIE_OPTIONS);
-      return { ...profile, accessToken: tokens.accessToken };
-    }
-    return profile;
+    const d = parse(schemas.login, b);
+    return this.output(
+      res,
+      await this.auth.login(
+        d.identifier,
+        d.password,
+        this.cookies.context(req),
+      ),
+    );
   }
-
+  @Post('register')
+  @HttpCode(202)
+  register(
+    @Body() b: unknown,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('X-Quiz-Remember-Device', 'true');
+    return this.auth.register(
+      parse(schemas.register, b),
+      this.cookies.context(req),
+    );
+  }
+  @Post('otp/resend')
+  @HttpCode(200)
+  @UseGuards(OptionalAccessGuard)
+  async resend(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const r = await this.otp.resend(
+      parse(schemas.resend, b).challengeId,
+      this.cookies.context(req),
+      req.user,
+    );
+    res.status(r.public ? 202 : 200);
+    return r.envelope;
+  }
+  @Post('otp/verify')
+  @HttpCode(200)
+  @UseGuards(OptionalAccessGuard)
+  async verify(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.verify, b);
+    return this.output(
+      res,
+      await this.auth.verify(
+        d.challengeId,
+        d.code,
+        d.rememberDevice,
+        this.cookies.context(req),
+        req.user,
+      ),
+    );
+  }
+  @Post('google/nonce')
+  @HttpCode(200)
+  @UseGuards(OptionalAccessGuard)
+  async nonce(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.nonce, b);
+    await this.rates.gate('nonce', req.ip ?? '', 30);
+    const ctx = this.cookies.ensure(req, res);
+    return serial(this.db, (tx) =>
+      this.google.nonce(tx, d.intent, ctx, req.user),
+    );
+  }
+  @Post('google')
+  @HttpCode(200)
+  async googleLogin(
+    @Body() b: unknown,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.auth.google(
+        parse(schemas.credential, b).credential,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('google/link/request')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  linkRequest(@Body() b: unknown, @Req() req: AuthRequest) {
+    return this.auth.requestLink(
+      parse(schemas.credential, b).credential,
+      this.cookies.context(req),
+      req.user,
+    );
+  }
+  @Post('google/link/complete')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  linkComplete(@Body() b: unknown, @Req() req: AuthRequest) {
+    const d = parse(schemas.link, b);
+    return this.credentials.link(
+      d.pendingLinkId,
+      d.grantToken,
+      req.user,
+      this.cookies.context(req),
+    );
+  }
+  @Delete('google/link')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async unlink(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.credentials.unlink(
+        parse(schemas.grant, b).grantToken,
+        req.user,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('step-up/request')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  stepUp(@Body() b: unknown, @Req() req: AuthRequest) {
+    const d = parse(schemas.stepUp, b);
+    return this.credentials.stepUp(
+      d.action,
+      d.target,
+      req.user,
+      this.cookies.context(req),
+    );
+  }
+  @Post('step-up/verify')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  stepVerify(@Body() b: unknown, @Req() req: AuthRequest) {
+    const d = parse(schemas.verifyOnly, b);
+    return this.credentials.verifyGrant(
+      'STEP_UP',
+      d.challengeId,
+      d.code,
+      this.cookies.context(req),
+      req.user,
+    );
+  }
+  @Post('password-reset/request')
+  @HttpCode(202)
+  resetRequest(@Body() b: unknown, @Req() req: Request) {
+    return this.credentials.requestReset(
+      parse(schemas.resetRequest, b).identifier,
+      this.cookies.context(req),
+    );
+  }
+  @Post('password-reset/verify')
+  @HttpCode(200)
+  resetVerify(@Body() b: unknown, @Req() req: Request) {
+    const d = parse(schemas.verifyOnly, b);
+    return this.credentials.verifyGrant(
+      'PASSWORD_RESET',
+      d.challengeId,
+      d.code,
+      this.cookies.context(req),
+    );
+  }
+  @Post('password-reset/complete')
+  @HttpCode(200)
+  async resetComplete(
+    @Body() b: unknown,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.resetComplete, b);
+    const result = await this.credentials.reset(
+      d.grantToken,
+      d.newPassword,
+      this.cookies.context(req),
+    );
+    for (const k of ['refresh_token', 'device_token', 'auth_context'] as const)
+      this.cookies.clear(res, k);
+    return result;
+  }
+  @Post('password/change')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async changePassword(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.credentials.password(
+        'PASSWORD_CHANGE',
+        parse(schemas.passwordChange, b),
+        req.user,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('password/set')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async setPassword(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.credentials.password(
+        'PASSWORD_SET',
+        parse(schemas.passwordSet, b),
+        req.user,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('email-change/request')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  requestEmail(@Body() b: unknown, @Req() req: AuthRequest) {
+    return this.credentials.requestEmail(
+      parse(schemas.emailChange, b),
+      req.user,
+      this.cookies.context(req),
+    );
+  }
+  @Post('email-change/verify')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async verifyEmail(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.verifyOnly, b);
+    return this.output(
+      res,
+      await this.credentials.verifyEmail(
+        d.challengeId,
+        d.code,
+        req.user,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('select-workspace')
+  @HttpCode(200)
+  async select(
+    @Body() b: unknown,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.selection, b);
+    return this.output(
+      res,
+      await this.sessions.select(
+        d.selectionToken,
+        d.membershipId,
+        this.cookies.context(req),
+      ),
+    );
+  }
+  @Post('switch-workspace')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async switchWorkspace(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.sessions.switch(
+        req.user,
+        this.cookies.get(req, 'refresh_token'),
+        parse(schemas.switch, b),
+      ),
+    );
+  }
+  @Post('enter-workspace')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  async enter(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.output(
+      res,
+      await this.sessions.switch(
+        req.user,
+        this.cookies.get(req, 'refresh_token'),
+        parse(schemas.enter, b),
+      ),
+    );
+  }
+  @Post('exit-workspace')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async exit(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    parse(schemas.empty, b);
+    return this.output(
+      res,
+      await this.sessions.switch(
+        req.user,
+        this.cookies.get(req, 'refresh_token'),
+        { exit: true },
+      ),
+    );
+  }
+  @Post('refresh')
+  @HttpCode(200)
+  async refresh(
+    @Body() b: unknown,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    parse(schemas.empty, b);
+    const token = this.cookies.get(req, 'refresh_token');
+    if (!token) throw authError('SESSION_INVALID', 401);
+    try {
+      return this.output(res, await this.sessions.refresh(token, req.ip ?? ''));
+    } catch (e) {
+      if (
+        e &&
+        typeof e === 'object' &&
+        'getStatus' in e &&
+        (e as { getStatus: () => number }).getStatus() === 401
+      )
+        this.cookies.clear(res, 'refresh_token');
+      throw e;
+    }
+  }
   @Post('logout')
-  @HttpCode(HttpStatus.OK)
-  logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie(REFRESH_COOKIE, REFRESH_COOKIE_OPTIONS);
+  @HttpCode(200)
+  async logout(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const d = parse(schemas.logout, b);
+    await this.sessions.logout(
+      this.cookies.get(req, 'refresh_token'),
+      this.sessions.readLogoutAccess(
+        req.headers.authorization?.replace(/^Bearer /, ''),
+      ),
+      d.forgetDevice ? this.cookies.get(req, 'device_token') : undefined,
+    );
+    this.cookies.clear(res, 'refresh_token');
+    this.cookies.clear(res, 'auth_context');
+    if (d.forgetDevice) this.cookies.clear(res, 'device_token');
     return { status: 'ok' };
+  }
+  @Post('logout-all')
+  @HttpCode(200)
+  @UseGuards(AuthGuard('jwt'))
+  async logoutAll(
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    parse(schemas.empty, b);
+    await serial(this.db, async (tx) => {
+      await this.sessions.live(tx, req.user);
+      await this.sessions.invalidateUser(tx, req.user.sub, 'logout-all');
+    });
+    for (const k of ['refresh_token', 'auth_context', 'device_token'] as const)
+      this.cookies.clear(res, k);
+    return { status: 'ok' };
+  }
+  @Get('sessions')
+  @UseGuards(AuthGuard('jwt'))
+  listSessions(
+    @Req() req: AuthRequest,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.sessions.list(
+      req.user,
+      'sessions',
+      undefined,
+      cursor,
+      limit ? Number(limit) : 20,
+    );
+  }
+  @Get('devices')
+  @UseGuards(AuthGuard('jwt'))
+  listDevices(
+    @Req() req: AuthRequest,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.sessions.list(
+      req.user,
+      'devices',
+      this.cookies.get(req, 'device_token'),
+      cursor,
+      limit ? Number(limit) : 20,
+    );
+  }
+  @Delete('sessions/:id')
+  @HttpCode(204)
+  @UseGuards(AuthGuard('jwt'))
+  async removeSession(
+    @Param('id') id: string,
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    parse(schemas.empty, b);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw authError('VALIDATION_ERROR');
+    if (await this.sessions.remove(req.user, 'sessions', id))
+      this.cookies.clear(res, 'refresh_token');
+  }
+  @Delete('devices/:id')
+  @HttpCode(204)
+  @UseGuards(AuthGuard('jwt'))
+  async removeDevice(
+    @Param('id') id: string,
+    @Body() b: unknown,
+    @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    parse(schemas.empty, b);
+    if (
+      await this.sessions.remove(
+        req.user,
+        'devices',
+        id,
+        this.cookies.get(req, 'device_token'),
+      )
+    )
+      this.cookies.clear(res, 'device_token');
+  }
+  @Get('my-memberships')
+  @UseGuards(AuthGuard('jwt'))
+  async memberships(@Req() req: AuthRequest) {
+    return (await this.sessions.memberships(this.db, req.user.sub)).map((m) =>
+      this.sessions.summary(m),
+    );
+  }
+  @Get('me')
+  @UseGuards(AuthGuard('jwt'))
+  me(@Req() req: AuthRequest) {
+    return {
+      status:
+        req.user.type === 'access'
+          ? 'ok'
+          : req.user.type === 'superadmin'
+            ? 'superadmin'
+            : 'no-workspace',
+      sessionId: req.user.sessionId,
+      ...(req.user.type === 'access'
+        ? { membershipId: req.user.membershipId }
+        : {}),
+    };
+  }
+  @Get('profile')
+  @UseGuards(AuthGuard('jwt'))
+  profile(@Req() req: AuthRequest) {
+    return this.auth.getProfile(
+      req.user.sub,
+      req.user.type === 'access' ? req.user.membershipId : undefined,
+      req.user.sessionId,
+    );
+  }
+  @Patch('profile')
+  @UseGuards(AuthGuard('jwt'))
+  updateProfile(@Body() dto: UpdateProfileDto, @Req() req: AuthRequest) {
+    return this.auth.updateProfile(req.user, dto);
+  }
+  @Get('admin/health')
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  health() {
+    return this.mail.health();
   }
 }

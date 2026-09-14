@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -15,25 +16,53 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import type { AccessTokenPayload } from '../auth/token.types';
-import { AcceptInvitationDto } from './dto/accept-invitation.dto';
+import type { Request, Response } from 'express';
+import { AuthCookies } from '../auth/security/cookies';
+import { OptionalAccessGuard } from '../auth/security/optional-access.guard';
+import { parse, schemas } from '../auth/auth.schemas';
 import { BulkCreateInvitationsDto } from './dto/bulk-create-invitations.dto';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { MemberInvitationsService } from './member-invitations.service';
 
 @Controller('member-invitations')
 export class MemberInvitationsController {
-  constructor(private readonly invitations: MemberInvitationsService) {}
+  constructor(
+    private readonly invitations: MemberInvitationsService,
+    private readonly cookies: AuthCookies,
+  ) {}
 
-  // No guard — the invitee hasn't signed in yet when they open the link.
-  @Get('by-token/:token')
-  byToken(@Param('token') token: string) {
-    return this.invitations.findByToken(token);
+  @Post('inspect')
+  @HttpCode(200)
+  inspect(@Body() b: unknown, @Req() req: Request) {
+    return this.invitations.inspect(
+      parse(schemas.inspect, b).token,
+      req.ip ?? '',
+    );
   }
-
-  @Post(':token/accept')
-  @HttpCode(HttpStatus.CREATED)
-  accept(@Param('token') token: string, @Body() dto: AcceptInvitationDto) {
-    return this.invitations.accept(token, dto.name, dto.password);
+  @Post('accept')
+  @HttpCode(200)
+  @UseGuards(OptionalAccessGuard)
+  accept(
+    @Body() b: unknown,
+    @Req() req: Request & { user?: AccessTokenPayload },
+  ) {
+    return this.invitations.accept(
+      parse(schemas.accept, b),
+      this.cookies.context(req),
+      req.user,
+    );
+  }
+  @Post(':id/resend')
+  @HttpCode(202)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  resend(
+    @Param('id') id: string,
+    @Body() b: unknown,
+    @CurrentUser() user: AccessTokenPayload,
+  ) {
+    parse(schemas.empty, b);
+    return this.invitations.resend(user.tenantId, id, user);
   }
 
   @Get()
@@ -47,22 +76,28 @@ export class MemberInvitationsController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  create(@CurrentUser() user: AccessTokenPayload, @Body() dto: CreateInvitationDto) {
-    return this.invitations.create(user.tenantId, dto, user.membershipId);
+  create(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() dto: CreateInvitationDto,
+  ) {
+    return this.invitations.create(user.tenantId, dto, user);
   }
 
   @Post('bulk')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  bulkCreate(@CurrentUser() user: AccessTokenPayload, @Body() dto: BulkCreateInvitationsDto) {
-    return this.invitations.bulkCreate(user.tenantId, dto.entries, user.membershipId);
+  bulkCreate(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() dto: BulkCreateInvitationsDto,
+  ) {
+    return this.invitations.bulkCreate(user.tenantId, dto.entries, user);
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   revoke(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
-    return this.invitations.revoke(user.tenantId, id, user.membershipId);
+    return this.invitations.revoke(user.tenantId, id, user);
   }
 }

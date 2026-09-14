@@ -7,11 +7,11 @@ export const PASSWORD_HISTORY_LIMIT = 5;
  * PASSWORD_HISTORY_LIMIT retired ones. */
 export async function assertPasswordNotReused(
   newPassword: string,
-  currentPasswordHash: string,
+  currentPasswordHash: string | null,
   previousPasswordHashes: string[],
 ): Promise<void> {
   for (const hash of [currentPasswordHash, ...previousPasswordHashes]) {
-    if (await bcrypt.compare(newPassword, hash)) {
+    if (hash && (await bcrypt.compare(newPassword, hash))) {
       throw new BadRequestException(
         "You've used this password before. Choose one you haven't used recently.",
       );
@@ -23,7 +23,10 @@ export async function assertPasswordNotReused(
  * retired goes on the front, most-recent-first, capped to the limit. */
 export function pushPasswordHistory(
   previousPasswordHashes: string[],
-  retiredHash: string,
+  retiredHash: string | null,
 ): string[] {
-  return [retiredHash, ...previousPasswordHashes].slice(0, PASSWORD_HISTORY_LIMIT);
+  return [
+    ...(retiredHash ? [retiredHash] : []),
+    ...previousPasswordHashes,
+  ].slice(0, PASSWORD_HISTORY_LIMIT);
 }

@@ -1,5 +1,9 @@
 import { Prisma, QuestionType } from '@prisma/client';
-import type { Question, QuestionDifficulty, QuestionOption } from '@prisma/client';
+import type {
+  Question,
+  QuestionDifficulty,
+  QuestionOption,
+} from '@prisma/client';
 
 type QuestionWithOptions = Question & { options: QuestionOption[] };
 

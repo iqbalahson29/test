@@ -1,212 +1,47 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext,useContext,useEffect,useState } from 'react'
 import type { ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { apiPost } from '../lib/api-client'
-import { setAccessToken } from './token-store'
-import type {
-  EnterWorkspaceApiResponse,
-  ExitWorkspaceApiResponse,
-  LoginApiResponse,
-  Membership,
-  RefreshApiResponse,
-  SelectWorkspaceApiResponse,
-} from './types'
-
-type AuthStatus =
-  | 'loading'
-  | 'unauthenticated'
-  | 'authenticated'
-  | 'superadmin'
-  | 'choosing-workspace'
-  | 'no-workspace'
-
+import type { AuthResult,OtpRequired,SessionResult } from '@quiz-platform/shared'
+import { ApiError } from '../lib/api-client'
+import { authOperation,decodeClaims,logoutSession,refreshSession,retryConnection,subscribeSession } from './session-coordinator'
+import { getAccessToken } from './token-store'
+import type { Membership } from './types'
+type AuthStatus='loading'|'unauthenticated'|'authenticated'|'superadmin'|'choosing-workspace'|'no-workspace'|'otp-required'|'workspace-request-pending'
 interface AuthContextValue {
-  status: AuthStatus
-  membership: Membership | null
-  pendingChoices: Membership[]
-  login: (email: string, password: string) => Promise<AuthStatus>
-  selectWorkspace: (membershipId: string) => Promise<void>
-  switchWorkspace: (membershipId: string) => Promise<void>
-  enterWorkspace: (tenantId: string) => Promise<void>
-  exitToSuperAdmin: () => Promise<void>
-  refreshSession: () => Promise<void>
-  logout: () => Promise<void>
+  status:AuthStatus;membership:Membership|null;pendingChoices:Membership[];challenge:OtpRequired|null;reconnecting:boolean;
+  login:(email:string,password:string)=>Promise<AuthStatus>;googleLogin:(credential:string)=>Promise<void>;
+  startChallenge:(challenge:OtpRequired)=>void;verifyOtp:(code:string,remember:boolean)=>Promise<AuthStatus>;
+  selectWorkspace:(membershipId:string)=>Promise<void>;switchWorkspace:(membershipId:string)=>Promise<void>;
+  enterWorkspace:(tenantId:string)=>Promise<void>;exitToSuperAdmin:()=>Promise<void>;refreshSession:()=>Promise<void>;logout:()=>Promise<void>;
 }
-
-const AuthContext = createContext<AuthContextValue | null>(null)
-
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient()
-  const [status, setStatus] = useState<AuthStatus>('loading')
-  const [membership, setMembership] = useState<Membership | null>(null)
-  const [pendingChoices, setPendingChoices] = useState<Membership[]>([])
-  const [selectionToken, setSelectionToken] = useState<string | null>(null)
-
-  const applyRefreshResult = (res: RefreshApiResponse) => {
-    setAccessToken(res.accessToken)
-    if (res.status === 'ok') {
-      setMembership(res.membership)
-      setStatus('authenticated')
-    } else if (res.status === 'superadmin') {
-      setMembership(null)
-      setStatus('superadmin')
-    } else {
-      setMembership(null)
-      setStatus('no-workspace')
-    }
-  }
-
-  // Shared by the mount-time silent refresh and the no-workspace
-  // dashboard's manual "Check again" button — re-deriving the session from
-  // the httpOnly refresh cookie is exactly what lets a 0-membership account
-  // pick up a newly-approved/assigned workspace without re-entering a
-  // password.
-  const refreshSession = async () => {
-    try {
-      const res = await apiPost<RefreshApiResponse>('/auth/refresh')
-      applyRefreshResult(res)
-      queryClient.clear()
-    } catch {
-      setStatus('unauthenticated')
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const res = await apiPost<RefreshApiResponse>('/auth/refresh')
-        if (cancelled) return
-        applyRefreshResult(res)
-      } catch {
-        if (!cancelled) setStatus('unauthenticated')
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const login = async (email: string, password: string): Promise<AuthStatus> => {
-    const res = await apiPost<LoginApiResponse>('/auth/login', { email, password })
-
-    if (res.status === 'choose-workspace') {
-      setSelectionToken(res.selectionToken)
-      setPendingChoices(res.choices)
-      setStatus('choosing-workspace')
-      return 'choosing-workspace'
-    }
-
-    setAccessToken(res.accessToken)
-    queryClient.clear()
-    if (res.status === 'ok') {
-      setMembership(res.membership)
-      setStatus('authenticated')
-      return 'authenticated'
-    }
-    if (res.status === 'no-workspace') {
-      setMembership(null)
-      setStatus('no-workspace')
-      return 'no-workspace'
-    }
-    setMembership(null)
-    setStatus('superadmin')
-    return 'superadmin'
-  }
-
-  const selectWorkspace = async (membershipId: string) => {
-    if (!selectionToken) return
-    const res = await apiPost<SelectWorkspaceApiResponse>('/auth/select-workspace', {
-      selectionToken,
-      membershipId,
+const AuthContext=createContext<AuthContextValue|null>(null)
+export function AuthProvider({children}:{children:ReactNode}){
+  const queryClient=useQueryClient(),[status,setStatus]=useState<AuthStatus>('loading'),[membership,setMembership]=useState<Membership|null>(null),[pendingChoices,setPendingChoices]=useState<Membership[]>([]),[selectionToken,setSelectionToken]=useState<string|null>(null),[challenge,setChallenge]=useState<OtpRequired|null>(null),[reconnecting,setReconnecting]=useState(false)
+  const resultStatus=(r:AuthResult):AuthStatus=>r.status==='ok'?'authenticated':r.status==='choose-workspace'?'choosing-workspace':r.status
+  const apply=(r:SessionResult)=>{setChallenge(null);setStatus(resultStatus(r));setMembership(r.status==='ok'?r.membership:null);setPendingChoices(r.status==='choose-workspace'?r.choices:[]);setSelectionToken(r.status==='choose-workspace'?r.selectionToken:null)}
+  useEffect(()=>{
+    let lastContext:string|null=null
+    const unsubscribe=subscribeSession(e=>{
+      if(e.type==='connection'){setReconnecting(e.reconnecting);return}
+      const claims=e.type==='result'&&'accessToken'in e.result?decodeClaims(e.result.accessToken):null
+      const key=claims?`${claims.sub}:${claims.sessionId}:${claims.contextVersion}`:null
+      if(key!==lastContext||e.type==='logout'){void queryClient.cancelQueries();queryClient.clear();lastContext=key}
+      if(e.type==='result')apply(e.result)
+      else{setStatus('unauthenticated');setMembership(null);setChallenge(null);setSelectionToken(null);setPendingChoices([]);if(e.expired)window.location.assign('/session-expired')}
     })
-    setAccessToken(res.accessToken)
-    setMembership(res.membership)
-    setSelectionToken(null)
-    setPendingChoices([])
-    setStatus('authenticated')
-    queryClient.clear()
-  }
-
-  const switchWorkspace = async (membershipId: string) => {
-    const res = await apiPost<SelectWorkspaceApiResponse>('/auth/switch-workspace', {
-      membershipId,
-    })
-    setAccessToken(res.accessToken)
-    setMembership(res.membership)
-    // Also reachable from 'no-workspace' (e.g. joining by code right after
-    // having zero memberships) — without this, status stays 'no-workspace'
-    // and ProtectedRoute bounces the very next navigation back to /login
-    // even though the token/membership above are already valid.
-    setStatus('authenticated')
-    // Every cached query (assignments/mine, quizzes, analytics, ...) was
-    // fetched under the old membership's tenant scope — without this,
-    // components would keep showing the previous workspace's data until
-    // something happens to trigger a refetch.
-    queryClient.clear()
-  }
-
-  // Used by the super admin's "Enter workspace" flow — upserts a real ADMIN
-  // membership server-side and swaps in a normal scoped session, so from
-  // here on the super admin is indistinguishable from any other admin.
-  const enterWorkspace = async (tenantId: string) => {
-    const res = await apiPost<EnterWorkspaceApiResponse>('/auth/enter-workspace', {
-      tenantId,
-    })
-    setAccessToken(res.accessToken)
-    setMembership(res.membership)
-    setStatus('authenticated')
-    queryClient.clear()
-  }
-
-  // Reverses enterWorkspace() — drops the scoped membership session and
-  // re-issues a superadmin session for the same account.
-  const exitToSuperAdmin = async () => {
-    const res = await apiPost<ExitWorkspaceApiResponse>('/auth/exit-workspace')
-    setAccessToken(res.accessToken)
-    setMembership(null)
-    setStatus('superadmin')
-    queryClient.clear()
-  }
-
-  const logout = async () => {
-    try {
-      await apiPost('/auth/logout')
-    } catch {
-      // ignore — we're clearing local state regardless
-    }
-    setAccessToken(null)
-    setMembership(null)
-    setPendingChoices([])
-    setSelectionToken(null)
-    setStatus('unauthenticated')
-    queryClient.clear()
-  }
-
-  return (
-    <AuthContext.Provider
-      value={{
-        status,
-        membership,
-        pendingChoices,
-        login,
-        selectWorkspace,
-        switchWorkspace,
-        enterWorkspace,
-        exitToSuperAdmin,
-        refreshSession,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  )
+    void refreshSession().catch(e=>{if(e instanceof ApiError&&e.status===401)setStatus('unauthenticated');else if(!(e instanceof ApiError&&e.code==='AUTH_CONTEXT_CHANGED'))setReconnecting(true)})
+    return unsubscribe
+  },[queryClient])
+  const startChallenge=(c:OtpRequired)=>{setChallenge(c);setStatus('otp-required')}
+  const accept=(r:AuthResult)=>{if(r.status==='otp-required')startChallenge(r);else if(r.status==='workspace-request-pending'){setChallenge(null);setStatus(r.status)}return resultStatus(r)}
+  const login=async(email:string,password:string)=>{try{return accept(await authOperation<AuthResult>('/auth/login',{identifier:email,password},{completeSession:true}))}catch(e){if(e instanceof ApiError&&e.challenge){startChallenge(e.challenge);return 'otp-required' as const}throw e}}
+  const googleLogin=async(credential:string)=>{try{accept(await authOperation<AuthResult>('/auth/google',{credential},{completeSession:true}))}catch(e){if(e instanceof ApiError&&e.challenge){startChallenge(e.challenge);return}throw e}}
+  const verifyOtp=async(code:string,remember:boolean)=>{if(!challenge)throw new Error('Restart verification');const r=await authOperation<AuthResult>('/auth/otp/verify',{challengeId:challenge.challengeId,code,rememberDevice:remember},{completeSession:true,protected:!!getAccessToken()});return accept(r)}
+  const change=async(path:string,body:unknown)=>{await authOperation<SessionResult>(path,body,{protected:true,completeSession:true})}
+  return <AuthContext.Provider value={{status,membership,pendingChoices,challenge,reconnecting,login,googleLogin,startChallenge,verifyOtp,
+    selectWorkspace:async(id)=>{if(selectionToken)await authOperation('/auth/select-workspace',{selectionToken,membershipId:id},{completeSession:true})},
+    switchWorkspace:(id)=>change('/auth/switch-workspace',{membershipId:id}),enterWorkspace:(id)=>change('/auth/enter-workspace',{tenantId:id}),exitToSuperAdmin:()=>change('/auth/exit-workspace',{}),refreshSession:async()=>{await refreshSession()},logout:()=>logoutSession()}}>
+    {reconnecting&&<div role="status" className="fixed top-0 inset-x-0 z-[100] bg-amber-100 text-amber-950 p-3 text-center text-sm">Connection interrupted. Changes are paused. <button className="underline" onClick={()=>void retryConnection().catch(()=>{})}>Retry connection</button></div>}{children}
+  </AuthContext.Provider>
 }
-
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext)
-  if (!ctx) {
-    throw new Error('useAuth must be used within an AuthProvider')
-  }
-  return ctx
-}
+export function useAuth(){const ctx=useContext(AuthContext);if(!ctx)throw new Error('useAuth must be used within AuthProvider');return ctx}

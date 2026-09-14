@@ -149,7 +149,11 @@ export class QuestionsService {
   > {
     if (dto.attachmentKey === undefined) return {};
     if (dto.attachmentKey === '') {
-      return { attachmentKey: null, attachmentFilename: null, attachmentMimeType: null };
+      return {
+        attachmentKey: null,
+        attachmentFilename: null,
+        attachmentMimeType: null,
+      };
     }
     return {
       attachmentKey: dto.attachmentKey,
@@ -163,7 +167,10 @@ export class QuestionsService {
     imageKey?: string;
     imageFilename?: string;
     imageMimeType?: string;
-  }): Pick<Prisma.QuestionUpdateInput, 'imageKey' | 'imageFilename' | 'imageMimeType'> {
+  }): Pick<
+    Prisma.QuestionUpdateInput,
+    'imageKey' | 'imageFilename' | 'imageMimeType'
+  > {
     if (dto.imageKey === undefined) return {};
     if (dto.imageKey === '') {
       return { imageKey: null, imageFilename: null, imageMimeType: null };
@@ -180,7 +187,10 @@ export class QuestionsService {
     imageKey?: string;
     imageFilename?: string;
     imageMimeType?: string;
-  }): Pick<Prisma.QuestionOptionUpdateInput, 'imageKey' | 'imageFilename' | 'imageMimeType'> {
+  }): Pick<
+    Prisma.QuestionOptionUpdateInput,
+    'imageKey' | 'imageFilename' | 'imageMimeType'
+  > {
     if (dto.imageKey === undefined) return {};
     if (dto.imageKey === '') {
       return { imageKey: null, imageFilename: null, imageMimeType: null };
@@ -242,7 +252,10 @@ export class QuestionsService {
         where: { quizId, module: dto.module },
         _max: { order: true },
       });
-      moduleUpdate = { module: dto.module, order: (maxOrder._max.order ?? -1) + 1 };
+      moduleUpdate = {
+        module: dto.module,
+        order: (maxOrder._max.order ?? -1) + 1,
+      };
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -259,11 +272,15 @@ export class QuestionsService {
         });
         const existingIds = new Set(existingOptions.map((o) => o.id));
         const keptIds = new Set(
-          dto.options.filter((o) => o.id && existingIds.has(o.id)).map((o) => o.id!),
+          dto.options
+            .filter((o) => o.id && existingIds.has(o.id))
+            .map((o) => o.id!),
         );
         const removedIds = [...existingIds].filter((id) => !keptIds.has(id));
         if (removedIds.length > 0) {
-          await tx.questionOption.deleteMany({ where: { id: { in: removedIds } } });
+          await tx.questionOption.deleteMany({
+            where: { id: { in: removedIds } },
+          });
         }
         for (let i = 0; i < dto.options.length; i++) {
           const o = dto.options[i];
@@ -493,11 +510,18 @@ export class QuestionsService {
     await this.getOwnQuiz(tenantId, quizId);
     const safeFilename = dto.filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const attachmentKey = `quizzes/${quizId}/question-attachments/${randomUUID()}-${safeFilename}`;
-    const uploadUrl = await this.storage.getUploadUrl(attachmentKey, dto.contentType);
+    const uploadUrl = await this.storage.getUploadUrl(
+      attachmentKey,
+      dto.contentType,
+    );
     return { uploadUrl, attachmentKey };
   }
 
-  async getAttachmentViewUrl(tenantId: string, quizId: string, questionId: string) {
+  async getAttachmentViewUrl(
+    tenantId: string,
+    quizId: string,
+    questionId: string,
+  ) {
     await this.getOwnQuiz(tenantId, quizId);
     const question = await this.prisma.question.findUnique({
       where: { id: questionId },
@@ -512,7 +536,11 @@ export class QuestionsService {
       question.attachmentKey,
       question.attachmentFilename ?? 'document',
     );
-    return { viewUrl, filename: question.attachmentFilename, mimeType: question.attachmentMimeType };
+    return {
+      viewUrl,
+      filename: question.attachmentFilename,
+      mimeType: question.attachmentMimeType,
+    };
   }
 
   async getImageViewUrl(tenantId: string, quizId: string, questionId: string) {
@@ -530,7 +558,11 @@ export class QuestionsService {
       question.imageKey,
       question.imageFilename ?? 'image',
     );
-    return { viewUrl, filename: question.imageFilename, mimeType: question.imageMimeType };
+    return {
+      viewUrl,
+      filename: question.imageFilename,
+      mimeType: question.imageMimeType,
+    };
   }
 
   async getOptionImageViewUrl(
@@ -544,13 +576,24 @@ export class QuestionsService {
       where: { id: optionId },
       include: { question: true },
     });
-    if (!option || option.question.quizId !== quizId || option.questionId !== questionId) {
+    if (
+      !option ||
+      option.question.quizId !== quizId ||
+      option.questionId !== questionId
+    ) {
       throw new NotFoundException('Option not found');
     }
     if (!option.imageKey) {
       throw new NotFoundException('This option has no image');
     }
-    const viewUrl = await this.storage.getViewUrl(option.imageKey, option.imageFilename ?? 'image');
-    return { viewUrl, filename: option.imageFilename, mimeType: option.imageMimeType };
+    const viewUrl = await this.storage.getViewUrl(
+      option.imageKey,
+      option.imageFilename ?? 'image',
+    );
+    return {
+      viewUrl,
+      filename: option.imageFilename,
+      mimeType: option.imageMimeType,
+    };
   }
 }

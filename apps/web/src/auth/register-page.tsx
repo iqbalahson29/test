@@ -1,13 +1,18 @@
-import { useState } from 'react'
+import { consumePostAuthRedirect } from './post-auth-redirect'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BookOpen, LineChart, Users2 } from 'lucide-react'
-import { ApiError, apiPost } from '../lib/api-client'
+import type { OtpRequired } from '@quiz-platform/shared'
+import { authOperation } from './session-coordinator'
+import { LoginVerification } from './login-verification'
+import { ChooseWorkspaceStep } from './choose-workspace-step'
+import { GoogleButton } from './google-button'
+import { ApiError } from '../lib/api-client'
 import { useAuth } from './auth-context'
 import { AuthLayout } from './auth-layout'
 import { PasswordInput, PasswordStrengthMeter } from './password-field'
 import { isStrongPassword } from './password-rules'
-import { consumePostAuthRedirect } from './post-auth-redirect'
 import { validateConfirmPassword, validateEmail, validateRequired } from './validation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,8 +35,8 @@ interface FieldErrors {
 }
 
 export function RegisterPage() {
-  const navigate = useNavigate()
-  const { login } = useAuth()
+  const navigate=useNavigate()
+  const { startChallenge,status,googleLogin } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -40,6 +45,7 @@ export function RegisterPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  useEffect(()=>{if(['authenticated','superadmin','no-workspace'].includes(status))navigate(consumePostAuthRedirect()??'/',{replace:true});else if(status==='workspace-request-pending')navigate('/workspace-pending',{replace:true})},[status,navigate])
 
   const validate = (): boolean => {
     const errors: FieldErrors = {
@@ -61,12 +67,8 @@ export function RegisterPage() {
     }
     setSubmitting(true)
     try {
-      await apiPost('/auth/register', { name, email, password })
-      // login() now succeeds even with zero memberships (status
-      // 'no-workspace'), so we can log straight in with the password
-      // already sitting in this form instead of bouncing to /login.
-      await login(email, password)
-      navigate(consumePostAuthRedirect() ?? '/', { replace: true })
+      const challenge = await authOperation<OtpRequired>('/auth/register', { name, email, password })
+      setPassword('');setConfirmPassword('');startChallenge(challenge)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create account')
     } finally {
@@ -81,7 +83,7 @@ export function RegisterPage() {
       subtitle="Create a student account, then ask to join a workspace or wait for your teacher to add you."
       features={features}
     >
-      <Card>
+      {status === 'otp-required' ? <LoginVerification /> : status === 'choosing-workspace' ? <ChooseWorkspaceStep /> : <Card>
         <CardHeader>
           <h2 className="text-base font-semibold">Create a student account</h2>
           <p className="text-sm text-muted-foreground">
@@ -90,6 +92,7 @@ export function RegisterPage() {
           </p>
         </CardHeader>
         <CardContent>
+          <GoogleButton onCredential={googleLogin} />
           <form onSubmit={onSubmit} noValidate className="space-y-4">
             {error && (
               <Alert variant="destructive">
@@ -109,6 +112,7 @@ export function RegisterPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="email">Email</Label>
+              <p className="text-xs text-muted-foreground">Plus tags are ignored. Verification mail goes to the address without its +tag.</p>
               <Input
                 id="email"
                 type="email"
@@ -180,7 +184,7 @@ export function RegisterPage() {
             </p>
           </form>
         </CardContent>
-      </Card>
+      </Card>}
     </AuthLayout>
   )
 }

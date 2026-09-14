@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { ALL_ROLES, Role } from '@quiz-platform/shared'
 import { ApiError } from '../../lib/api-client'
 import { memberInvitationsApi } from '../member-invitations/api'
@@ -33,14 +33,12 @@ export function AddMemberDialog() {
   const [role, setRole] = useState<Role>(Role.STUDENT)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<CreateInvitationResult | null>(null)
-  const [copied, setCopied] = useState(false)
 
   const reset = () => {
     setEmail('')
     setRole(Role.STUDENT)
     setError(null)
     setResult(null)
-    setCopied(false)
   }
 
   const createMutation = useMutation({
@@ -58,16 +56,6 @@ export function AddMemberDialog() {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault()
     createMutation.mutate()
-  }
-
-  const inviteLink =
-    result?.status === 'invited' ? `${window.location.origin}/accept-invite/${result.token}` : null
-
-  const copyLink = async () => {
-    if (!inviteLink) return
-    await navigator.clipboard.writeText(inviteLink)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -99,16 +87,8 @@ export function AddMemberDialog() {
             ) : (
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
-                  {result.email} doesn&apos;t have an account yet. Share this link with them —
-                  they&apos;ll set up their account and be added as {result.role}.
+                  An invitation email is queued for {result.email}. They will verify their email before joining as {result.role}.
                 </p>
-                <div className="flex gap-2">
-                  <Input readOnly value={inviteLink ?? ''} onFocus={(e) => e.target.select()} />
-                  <Button type="button" variant="outline" onClick={copyLink}>
-                    {copied ? <Check className="text-emerald-600" /> : <Copy />}
-                    {copied ? 'Copied' : 'Copy'}
-                  </Button>
-                </div>
               </div>
             )}
             <DialogFooter>

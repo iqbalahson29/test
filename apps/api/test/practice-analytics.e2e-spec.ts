@@ -1,41 +1,32 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import {
+  request,
+  makeApp,
+  fixtureLogin,
+  fixtureTenantAdmin,
+  str,
+  list,
+  must,
+} from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-import { fillRemainingPracticeModules, submitAllPracticeModules } from './module-test-helpers';
+import {
+  fillRemainingPracticeModules,
+  submitAllPracticeModules,
+} from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string, password = 'password123') {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
 // Requests + approves a brand-new one-tenant workspace via the platform
 // super admin, to get an admin token scoped to a *different* tenant than
 // acme-school — used to exercise tenant isolation.
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
-  const superadmin = await login(app, 'superadmin@quiz-platform.test');
-  const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
-  const password = 'Password123';
-  const reqRes = await request(app.getHttpServer())
-    .post('/tenant-requests')
-    .send({
-      workspaceName: `Beta ${label} ${Date.now()}`,
-      requesterName: 'Beta Admin',
-      requesterEmail: email,
-      password,
-    })
-    .expect(201);
-  await request(app.getHttpServer())
-    .post(`/tenant-requests/${reqRes.body.id}/approve`)
-    .set('Authorization', `Bearer ${superadmin.accessToken}`)
-    .expect(201);
-  const adminLogin = await login(app, email, password);
-  return { token: adminLogin.accessToken as string, email };
+  return fixtureTenantAdmin(app, label);
 }
 
 describe('Practice analytics (e2e)', () => {
@@ -46,14 +37,7 @@ describe('Practice analytics (e2e)', () => {
   let studentMembershipId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -67,8 +51,8 @@ describe('Practice analytics (e2e)', () => {
       .get('/memberships')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    studentMembershipId = (
-      members.body as { id: string; user: { email: string } }[]
+    studentMembershipId = list<{ id: string; user: { email: string } }>(
+      members.body,
     ).find((m) => m.user.email === 'student@acme.test')!.id;
   });
 
@@ -81,7 +65,11 @@ describe('Practice analytics (e2e)', () => {
     const createRes = await request(app.getHttpServer())
       .post('/practice-quizzes')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ title: 'Analytics Test Practice Quiz', maxAttempts: 5, passMarkPercent: 60 })
+      .send({
+        title: 'Analytics Test Practice Quiz',
+        maxAttempts: 5,
+        passMarkPercent: 60,
+      })
       .expect(201);
     const quizId = createRes.body.id as string;
 
@@ -97,7 +85,9 @@ describe('Practice analytics (e2e)', () => {
       })
       .expect(201);
 
-    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
+    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, [
+      'RW_MODULE_1',
+    ]);
 
     await request(app.getHttpServer())
       .patch(`/practice-quizzes/${quizId}/status`)
@@ -118,11 +108,13 @@ describe('Practice analytics (e2e)', () => {
       .send({ quizId })
       .expect(201);
     await request(app.getHttpServer())
-      .patch(`/practice-attempts/${a1.body.id}/responses/${numeric.body.id}`)
+      .patch(
+        `/practice-attempts/${str(a1.body.id)}/responses/${str(numeric.body.id)}`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { value: 4 } })
       .expect(200);
-    await submitAllPracticeModules(app, studentToken, a1.body.id);
+    await submitAllPracticeModules(app, studentToken, str(a1.body.id));
 
     // Attempt 2: wrong -> 0%.
     const a2 = await request(app.getHttpServer())
@@ -131,11 +123,13 @@ describe('Practice analytics (e2e)', () => {
       .send({ quizId })
       .expect(201);
     await request(app.getHttpServer())
-      .patch(`/practice-attempts/${a2.body.id}/responses/${numeric.body.id}`)
+      .patch(
+        `/practice-attempts/${str(a2.body.id)}/responses/${str(numeric.body.id)}`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { value: 999 } })
       .expect(200);
-    await submitAllPracticeModules(app, studentToken, a2.body.id);
+    await submitAllPracticeModules(app, studentToken, str(a2.body.id));
 
     const analytics = await request(app.getHttpServer())
       .get(`/practice-quizzes/${quizId}/analytics`)
@@ -150,12 +144,15 @@ describe('Practice analytics (e2e)', () => {
     expect(analytics.body.maxScore).toBe(10);
     expect(analytics.body.passRate).toBe(50); // one of two attempts >= 60%
 
-    const dist = analytics.body.scoreDistribution as { bucket: string; count: number }[];
-    expect(dist.find((b) => b.bucket === '0-10%').count).toBe(1);
-    expect(dist.find((b) => b.bucket === '90-100%').count).toBe(1);
+    const dist = list<{
+      bucket: string;
+      count: number;
+    }>(analytics.body.scoreDistribution);
+    expect(must(dist.find((b) => b.bucket === '0-10%')).count).toBe(1);
+    expect(must(dist.find((b) => b.bucket === '90-100%')).count).toBe(1);
     expect(dist.reduce((sum, b) => sum + b.count, 0)).toBe(2);
 
-    const q = analytics.body.perQuestion[0];
+    const q = list(analytics.body.perQuestion)[0];
     expect(q.percentCorrect).toBe(50); // 1 of 2 fully correct
     expect(q.averagePercent).toBe(50); // (100 + 0) / 2
   });
@@ -166,8 +163,8 @@ describe('Practice analytics (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .expect(200);
 
-    expect(mine.body.attempts.length).toBeGreaterThanOrEqual(2);
-    const gradedInTrend = mine.body.trend as { percent: number }[];
+    expect(list(mine.body.attempts).length).toBeGreaterThanOrEqual(2);
+    const gradedInTrend = list<{ percent: number }>(mine.body.trend);
     expect(gradedInTrend.some((t) => t.percent === 100)).toBe(true);
     expect(gradedInTrend.some((t) => t.percent === 0)).toBe(true);
   });
@@ -180,7 +177,7 @@ describe('Practice analytics (e2e)', () => {
       .expect(201);
 
     await request(app.getHttpServer())
-      .get(`/practice-quizzes/${createRes.body.id}/analytics`)
+      .get(`/practice-quizzes/${str(createRes.body.id)}/analytics`)
       .set('Authorization', `Bearer ${betaAdminToken}`)
       .expect(404);
 

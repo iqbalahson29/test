@@ -8,6 +8,14 @@ services:
       POSTGRES_DB: quiz_platform
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Compose only guarantees start order, not readiness. Without this the release script
+    # could reach `prisma migrate deploy` before a cold PostgreSQL was accepting connections.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d quiz_platform']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
   minio:
     image: minio/minio
@@ -22,16 +30,25 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    image: ${QUIZ_API_IMAGE:?Set immutable QUIZ_API_IMAGE}
     restart: unless-stopped
     env_file: .env
     depends_on:
-      - postgres
-      - minio
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
 

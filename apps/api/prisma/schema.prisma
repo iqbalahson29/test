@@ -74,8 +74,10 @@ enum AttemptStatus {
 
 model User {
   id                     String                 @id @default(cuid())
-  email                  String                 @unique
-  passwordHash           String
+  email                  String
+  emailNormalized        String                 @unique
+  emailVerifiedAt        DateTime?              @db.Timestamptz(3)
+  passwordHash           String?
   // Bumped whenever the password changes; embedded in every issued token and
   // checked on refresh — invalidates every other session's refresh token
   // (all other devices/tabs) the moment the password is changed, without a
@@ -93,7 +95,16 @@ model User {
   memberships            Membership[]
   workspaceJoinRequests  WorkspaceJoinRequest[]
   notifications          Notification[]
-  passwordResetTokens    PasswordResetToken[]
+  identities             AuthIdentity[]
+  sessions               Session[]
+  trustedDevices         TrustedDevice[]
+  challenges             AuthChallenge[]
+  grants                 AuthGrant[]
+  googleNonces           GoogleNonce[]
+  pendingGoogleLinks     PendingGoogleLink[]
+  pendingEmailChanges    PendingEmailChange[]
+  loginRisk              AccountLoginRisk?
+  securityEvents         SecurityEvent[]
 
   // Profile — most of these are only meaningful for STUDENT memberships
   // (gradeLevel, studentId, guardian*), but they live on User rather than a
@@ -160,6 +171,7 @@ model Membership {
   gradedResponses     Response[]         @relation("ResponseGradedBy")
   auditLogs           AuditLog[]
   sentInvitations     MemberInvitation[]
+  sessions            Session[]
   notifications       Notification[]
 
   createdPracticeQuizzes      PracticeQuiz[]           @relation("PracticeQuizCreatedBy")
@@ -179,16 +191,22 @@ model Membership {
 // A public request for a new workspace, reviewed by a platform super admin
 // (User.isSuperAdmin). Approval creates the Tenant + User + Membership.
 model TenantRequest {
-  id             String              @id @default(cuid())
-  workspaceName  String
-  slug           String              @unique
-  description    String?
-  requesterName  String
-  requesterEmail String
-  passwordHash   String
-  status         TenantRequestStatus @default(PENDING)
-  tenantId       String?
-  tenant         Tenant?             @relation(fields: [tenantId], references: [id])
+  id              String              @id @default(cuid())
+  workspaceName   String
+  slug            String
+  description     String?
+  requesterName   String
+  requesterEmail  String
+  emailNormalized String
+  emailVerifiedAt DateTime?           @db.Timestamptz(3)
+  contextHash     String
+  expiresAt       DateTime            @db.Timestamptz(3)
+  updatedAt       DateTime            @updatedAt @db.Timestamptz(3)
+  challenges      AuthChallenge[]
+  passwordHash    String?
+  status          TenantRequestStatus @default(PENDING)
+  tenantId        String?
+  tenant          Tenant?             @relation(fields: [tenantId], references: [id])
 
   createdAt  DateTime  @default(now())
   reviewedAt DateTime?
@@ -218,6 +236,7 @@ enum MemberInvitationStatus {
   PENDING
   ACCEPTED
   REVOKED
+  EXPIRED
 }
 
 // An admin-initiated invite for an email with no existing account yet.
@@ -227,25 +246,18 @@ enum MemberInvitationStatus {
 // A single-use, expiring token for the "forgot password" flow. The token
 // itself is only ever emailed to the user — tokenHash (sha256) is what's
 // stored, so a DB leak alone can't be used to take over accounts.
-model PasswordResetToken {
-  id        String    @id @default(cuid())
-  userId    String
-  tokenHash String    @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-}
-
 model MemberInvitation {
   id                    String                 @id @default(cuid())
   tenantId              String
   email                 String
   role                  Role
-  token                 String                 @unique
+  tokenHash             String                 @unique
+  emailNormalized       String
+  expiresAt             DateTime               @db.Timestamptz(3)
+  lastSentAt            DateTime?              @db.Timestamptz(3)
+  updatedAt             DateTime               @updatedAt @db.Timestamptz(3)
+  challenges            AuthChallenge[]
+  pendingRegistrations  PendingRegistration[]
   status                MemberInvitationStatus @default(PENDING)
   invitedByMembershipId String?
 
@@ -788,4 +800,589 @@ model Notification {
   @@index([membershipId, read])
   @@index([recipientUserId, read])
   @@index([tenantId])
+}
+
+enum IdentityProvider {
+  PASSWORD
+  GOOGLE
+}
+
+enum SessionContext {
+  ACCOUNT
+  MEMBERSHIP
+  SUPERADMIN
+  PICKER
+}
+
+enum OtpPurpose {
+  SIGNUP_VERIFY
+  LOGIN_VERIFY
+  PASSWORD_RESET
+  STEP_UP
+  TENANT_REQUEST
+  EMAIL_CHANGE
+}
+
+enum PrincipalKind {
+  USER
+  REGISTRATION
+  TENANT_REQUEST
+  DECOY
+}
+
+enum ChallengeState {
+  PENDING_SEND
+  READY
+  CONSUMED
+  EXPIRED
+  LOCKED
+  CANCELLED
+  FAILED
+}
+
+enum MailSubmission {
+  PENDING
+  CONFIRMED
+  FAILED
+  UNKNOWN
+}
+
+enum DeliveryProvenance {
+  BREVO
+  CONSOLE
+  TEST
+  OPERATOR
+}
+
+enum GoogleIntent {
+  LOGIN
+  LINK
+}
+
+enum GrantAction {
+  PASSWORD_RESET
+  PASSWORD_CHANGE
+  PASSWORD_SET
+  EMAIL_CHANGE_START
+  GOOGLE_LINK
+  GOOGLE_UNLINK
+  ADMIN_EMAIL_CHANGE
+  ADMIN_PASSWORD_SET
+  ADMIN_SUPPRESSION_CLEAR
+}
+
+enum MailCategory {
+  OTP
+  INVITE
+  SECURITY
+}
+
+enum MailAttemptOutcome {
+  RESERVED
+  ACCEPTED
+  REJECTED
+  UNKNOWN
+}
+
+enum OutboxStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  UNKNOWN
+  CANCELLED
+}
+
+enum RecipientState {
+  OK
+  SUPPRESSED
+}
+
+model AuthIdentity {
+  id             String           @id @default(cuid())
+  userId         String
+  provider       IdentityProvider
+  providerUserId String
+  email          String?
+  emailVerified  Boolean          @default(false)
+  lastUsedAt     DateTime?        @db.Timestamptz(3)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+}
+
+model Session {
+  id                 String               @id @default(uuid()) @db.Uuid
+  userId             String
+  membershipId       String?
+  context            SessionContext
+  contextVersion     Int                  @default(0)
+  refreshGeneration  Int                  @default(0)
+  tokenVersion       Int
+  authMethods        String[]
+  firstFactorAt      DateTime             @db.Timestamptz(3)
+  otpVerifiedAt      DateTime?            @db.Timestamptz(3)
+  currentRefreshHash String?              @unique
+  currentRefreshJti  String?              @unique
+  lastUsedAt         DateTime             @db.Timestamptz(3)
+  idleExpiresAt      DateTime             @db.Timestamptz(3)
+  absoluteExpiresAt  DateTime             @db.Timestamptz(3)
+  revokedAt          DateTime?            @db.Timestamptz(3)
+  revokedReason      String?
+  userAgent          String?              @db.VarChar(512)
+  ip                 String?              @db.VarChar(45)
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership         Membership?          @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  refreshUses        RefreshTokenUse[]
+  selections         WorkspaceSelection[]
+  challenges         AuthChallenge[]
+  grants             AuthGrant[]
+  nonces             GoogleNonce[]
+  pendingLinks       PendingGoogleLink[]
+  pendingEmails      PendingEmailChange[]
+  securityEvents     SecurityEvent[]
+  createdAt          DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@index([userId, revokedAt])
+  @@index([membershipId])
+  @@index([idleExpiresAt])
+  @@index([absoluteExpiresAt])
+}
+
+model RefreshTokenUse {
+  id           String    @id @default(cuid())
+  sessionId    String    @db.Uuid
+  jti          String    @unique
+  tokenHash    String    @unique
+  issuedAt     DateTime  @db.Timestamptz(3)
+  jwtExpiresAt DateTime  @db.Timestamptz(3)
+  consumedAt   DateTime? @db.Timestamptz(3)
+  graceUntil   DateTime? @db.Timestamptz(3)
+  session      Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([sessionId, consumedAt])
+  @@index([jwtExpiresAt])
+}
+
+model TrustedDevice {
+  id                String    @id @default(cuid())
+  userId            String
+  tokenHash         String    @unique
+  label             String?   @db.VarChar(100)
+  lastIp            String?   @db.VarChar(45)
+  lastUsedAt        DateTime  @db.Timestamptz(3)
+  expiresAt         DateTime  @db.Timestamptz(3)
+  absoluteExpiresAt DateTime  @db.Timestamptz(3)
+  revokedAt         DateTime? @db.Timestamptz(3)
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([userId, expiresAt])
+}
+
+model WorkspaceSelection {
+  id           String    @id @default(cuid())
+  tokenHash    String    @unique
+  sessionId    String    @db.Uuid
+  contextHash  String
+  tokenVersion Int
+  expiresAt    DateTime  @db.Timestamptz(3)
+  consumedAt   DateTime? @db.Timestamptz(3)
+  session      Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+model AuthChallenge {
+  id                    String               @id @default(cuid())
+  publicId              String               @unique
+  purpose               OtpPurpose
+  principalKind         PrincipalKind
+  userId                String?
+  pendingRegistrationId String?
+  tenantRequestId       String?
+  contextHash           String
+  emailNormalized       String
+  userTokenVersion      Int?
+  firstFactor           IdentityProvider?
+  firstFactorAt         DateTime?            @db.Timestamptz(3)
+  loginReasons          String[]             @default([])
+  sessionId             String?              @db.Uuid
+  action                GrantAction?
+  actionTargetHash      String?
+  googleSub             String?
+  googleEmail           String?
+  googleAuthoritative   Boolean?
+  pendingGoogleLinkId   String?
+  invitationId          String?
+  invitationTokenHash   String?
+  pendingEmailChangeId  String?              @unique
+  state                 ChallengeState       @default(PENDING_SEND)
+  expiresAt             DateTime             @db.Timestamptz(3)
+  attempts              Int                  @default(0)
+  currentGeneration     Int                  @default(0)
+  consumedAt            DateTime?            @db.Timestamptz(3)
+  failureReason         String?
+  user                  User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  registration          PendingRegistration? @relation(fields: [pendingRegistrationId], references: [id], onDelete: Cascade)
+  tenantRequest         TenantRequest?       @relation(fields: [tenantRequestId], references: [id], onDelete: Cascade)
+  session               Session?             @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  pendingGoogleLink     PendingGoogleLink?   @relation(fields: [pendingGoogleLinkId], references: [id], onDelete: Cascade)
+  invitation            MemberInvitation?    @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  pendingEmailChange    PendingEmailChange?  @relation(fields: [pendingEmailChangeId], references: [id], onDelete: Cascade)
+  otps                  EmailOtp[]
+  grant                 AuthGrant?
+  createdAt             DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@index([userId, purpose])
+  @@index([pendingRegistrationId])
+  @@index([tenantRequestId])
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+model EmailOtp {
+  id                 String             @id @default(cuid())
+  challengeId        String
+  generation         Int
+  codeHash           String
+  pepperVersion      Int
+  sentTo             String
+  submission         MailSubmission     @default(PENDING)
+  deliveryProvenance DeliveryProvenance
+  providerMessageId  String?
+  dispatchId         String             @unique
+  expiresAt          DateTime           @db.Timestamptz(3)
+  confirmedAt        DateTime?          @db.Timestamptz(3)
+  consumedAt         DateTime?          @db.Timestamptz(3)
+  challenge          AuthChallenge      @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@unique([challengeId, generation])
+  @@index([expiresAt])
+}
+
+model PendingRegistration {
+  id                  String            @id @default(cuid())
+  email               String
+  emailNormalized     String
+  name                String
+  provider            IdentityProvider
+  passwordHash        String?
+  googleSub           String?
+  googleEmail         String?
+  googleAuthoritative Boolean?
+  contextHash         String
+  invitationId        String?
+  expiresAt           DateTime          @db.Timestamptz(3)
+  completedAt         DateTime?         @db.Timestamptz(3)
+  invitation          MemberInvitation? @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  challenges          AuthChallenge[]
+  createdAt           DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime          @updatedAt @db.Timestamptz(3)
+
+  @@index([emailNormalized])
+  @@index([expiresAt])
+}
+
+model GoogleNonce {
+  id          String       @id @default(cuid())
+  nonceHash   String       @unique
+  contextHash String
+  intent      GoogleIntent
+  userId      String?
+  sessionId   String?      @db.Uuid
+  expiresAt   DateTime     @db.Timestamptz(3)
+  consumedAt  DateTime?    @db.Timestamptz(3)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session     Session?     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+model PendingGoogleLink {
+  id            String          @id @default(cuid())
+  userId        String
+  sessionId     String          @db.Uuid
+  contextHash   String
+  googleSub     String
+  providerEmail String
+  authoritative Boolean
+  tokenVersion  Int
+  expiresAt     DateTime        @db.Timestamptz(3)
+  consumedAt    DateTime?       @db.Timestamptz(3)
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session       Session         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  challenges    AuthChallenge[]
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([userId, sessionId])
+  @@index([expiresAt])
+}
+
+model AuthGrant {
+  id                String        @id @default(cuid())
+  tokenHash         String        @unique
+  sourceChallengeId String        @unique
+  userId            String
+  sessionId         String?       @db.Uuid
+  contextHash       String
+  action            GrantAction
+  actionTargetHash  String?
+  tokenVersion      Int
+  expiresAt         DateTime      @db.Timestamptz(3)
+  consumedAt        DateTime?     @db.Timestamptz(3)
+  sourceChallenge   AuthChallenge @relation(fields: [sourceChallengeId], references: [id], onDelete: Cascade)
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session           Session?      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model PendingEmailChange {
+  id                 String         @id @default(cuid())
+  userId             String
+  sessionId          String         @db.Uuid
+  oldEmailNormalized String
+  newEmail           String
+  newEmailNormalized String
+  tokenVersion       Int
+  expiresAt          DateTime       @db.Timestamptz(3)
+  completedAt        DateTime?      @db.Timestamptz(3)
+  invalidatedAt      DateTime?      @db.Timestamptz(3)
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session            Session        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  challenge          AuthChallenge?
+  createdAt          DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+model LoginFailure {
+  identifierHash String
+  sourceHash     String
+  count          Int
+  lastFailedAt   DateTime @db.Timestamptz(3)
+  nextAllowedAt  DateTime @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([identifierHash, sourceHash])
+  @@index([lastFailedAt])
+}
+
+model AccountLoginRisk {
+  userId       String   @id
+  count        Int
+  lastFailedAt DateTime @db.Timestamptz(3)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model AuthRateBucket {
+  scope       String
+  keyHash     String
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int
+  expiresAt   DateTime @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([scope, keyHash, windowStart])
+  @@index([expiresAt])
+}
+
+model OtpSendReservation {
+  id            String   @id @default(cuid())
+  recipientHash String
+  sourceHash    String
+  challengeId   String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([recipientHash, createdAt])
+  @@index([sourceHash, createdAt])
+}
+
+model MailSendBudget {
+  day             DateTime  @id @db.Date
+  totalAttempts   Int       @default(0)
+  otpAttempts     Int       @default(0)
+  nonOtpAttempts  Int       @default(0)
+  budgetAlertedAt DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+model MailAttempt {
+  id                String             @id @default(cuid())
+  dispatchId        String
+  attemptNumber     Int
+  category          MailCategory
+  reservedAt        DateTime           @db.Timestamptz(3)
+  outcome           MailAttemptOutcome @default(RESERVED)
+  providerCode      String?
+  providerMessageId String?
+  createdAt         DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@unique([dispatchId, attemptNumber])
+  @@index([reservedAt, category])
+}
+
+model MailOutbox {
+  id                        String       @id @default(cuid())
+  category                  MailCategory
+  recipient                 String
+  templateType              String
+  templateVersion           Int          @default(1)
+  payload                   Json
+  senderSnapshot            Json
+  appOriginSnapshot         String
+  renderedPayloadCiphertext String?
+  payloadKeyVersion         Int?
+  payloadNonce              String?
+  renderedContentHash       String?
+  dispatchId                String       @unique
+  idempotencyKey            String       @unique
+  status                    OutboxStatus @default(PENDING)
+  attemptCount              Int          @default(0)
+  nextAttemptAt             DateTime     @db.Timestamptz(3)
+  firstAttemptAt            DateTime?    @db.Timestamptz(3)
+  leaseOwner                String?
+  leaseExpiresAt            DateTime?    @db.Timestamptz(3)
+  lastErrorKind             String?
+  expiresAt                 DateTime     @db.Timestamptz(3)
+  createdAt                 DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+  @@index([leaseExpiresAt])
+}
+
+model MailRecipient {
+  emailCanonical   String         @id
+  state            RecipientState @default(OK)
+  reason           String?
+  suppressedAt     DateTime?      @db.Timestamptz(3)
+  softFailureCount Int            @default(0)
+  lastEventAt      DateTime?      @db.Timestamptz(3)
+  lastClearedAt    DateTime?      @db.Timestamptz(3)
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
+}
+
+model MailDelivery {
+  id              String         @id @default(cuid())
+  dispatchId      String         @unique
+  provider        String
+  messageId       String?
+  recipient       String
+  category        MailCategory
+  submissionState MailSubmission
+  deliveryState   String         @default("pending")
+  lastEventAt     DateTime?      @db.Timestamptz(3)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@unique([provider, messageId, recipient])
+  @@index([createdAt])
+}
+
+model MailDeliveryEvent {
+  id              String    @id @default(cuid())
+  provider        String
+  messageId       String
+  recipient       String
+  event           String
+  providerEventAt DateTime  @db.Timestamptz(3)
+  payloadHash     String
+  receivedAt      DateTime  @db.Timestamptz(3)
+  reason          String?
+  dispatchId      String?
+  reconciledAt    DateTime? @db.Timestamptz(3)
+  // Bounded retry scheduling: an event whose delivery mapping has not arrived yet is
+  // deferred rather than re-read on every sweep, so it cannot starve later events.
+  attempts        Int       @default(0)
+  nextAttemptAt   DateTime? @db.Timestamptz(3)
+  // Terminal state for callbacks that will never acquire a mapping. Quarantining stops the
+  // sweep revisiting the row; it changes no recipient state, so an unknown message can
+  // never suppress an unrelated address.
+  quarantinedAt   DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@unique([provider, messageId, recipient, event, providerEventAt, payloadHash], map: "mail_event_dedup")
+  @@index([messageId, recipient])
+  @@index([receivedAt])
+  @@index([nextAttemptAt], map: "MailDeliveryEvent_reconcile_queue_idx")
+}
+
+model SecurityEvent {
+  id           String   @id @default(cuid())
+  userId       String?
+  sessionId    String?  @db.Uuid
+  actorKey     String?
+  type         String
+  outcome      String
+  sourceIpHash String?
+  metadata     Json
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session      Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([createdAt])
+}
+
+model OperationalAlert {
+  id             String    @id @default(cuid())
+  type           String
+  dedupeKey      String    @unique
+  acknowledgedAt DateTime? @db.Timestamptz(3)
+  metadata       Json
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([createdAt])
+}
+
+model AuthJobLease {
+  name      String   @id
+  owner     String
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model CspReport {
+  id          String   @id @default(cuid())
+  directive   String
+  blockedUrl  String?
+  documentUrl String?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([createdAt])
 }

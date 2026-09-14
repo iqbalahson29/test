@@ -3,7 +3,6 @@ import { apiDelete, apiGet, apiPost } from '../../lib/api-client'
 import type {
   BulkInvitationResult,
   CreateInvitationResult,
-  InvitationPreview,
   PendingInvitation,
 } from './types'
 
@@ -14,11 +13,5 @@ export const memberInvitationsApi = {
   bulkCreate: (entries: { email: string; role: Role }[]) =>
     apiPost<BulkInvitationResult>('/member-invitations/bulk', { entries }),
   revoke: (id: string) => apiDelete(`/member-invitations/${id}`),
-  byToken: (token: string) =>
-    apiGet<InvitationPreview>(`/member-invitations/by-token/${token}`),
-  accept: (token: string, name: string, password: string) =>
-    apiPost<{ id: string; email: string }>(`/member-invitations/${token}/accept`, {
-      name,
-      password,
-    }),
+  resend:(id:string)=>apiPost(`/member-invitations/${id}/resend`),
 }

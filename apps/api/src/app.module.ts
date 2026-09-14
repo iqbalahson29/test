@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { validateAuthConfig } from './auth/security/auth-config';
+import { PersistentRequestGuard } from './auth/security/http-security';
+import { SecurityController } from './mailer/security.controller';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
@@ -31,7 +34,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateAuthConfig }),
     ScheduleModule.forRoot(),
     // Global default: 200 req/min per IP, generous enough for normal use
     // (polling, notifications, autosave) while blocking abusive bursts.
@@ -63,6 +66,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SearchModule,
     NotificationsModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  controllers: [SecurityController],
+  providers: [{ provide: APP_GUARD, useClass: PersistentRequestGuard }],
 })
 export class AppModule {}

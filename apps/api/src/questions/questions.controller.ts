@@ -83,7 +83,13 @@ export class QuestionsController {
     @Param('id') id: string,
     @Body() dto: UpdateQuestionDto,
   ) {
-    return this.questions.update(user.tenantId, quizId, id, dto, user.membershipId);
+    return this.questions.update(
+      user.tenantId,
+      quizId,
+      id,
+      dto,
+      user.membershipId,
+    );
   }
 
   @Get(':id/attachment-url')
@@ -111,7 +117,12 @@ export class QuestionsController {
     @Param('id') id: string,
     @Param('optionId') optionId: string,
   ) {
-    return this.questions.getOptionImageViewUrl(user.tenantId, quizId, id, optionId);
+    return this.questions.getOptionImageViewUrl(
+      user.tenantId,
+      quizId,
+      id,
+      optionId,
+    );
   }
 
   @Post(':id/duplicate')
@@ -120,7 +131,12 @@ export class QuestionsController {
     @Param('quizId') quizId: string,
     @Param('id') id: string,
   ) {
-    return this.questions.duplicate(user.tenantId, quizId, id, user.membershipId);
+    return this.questions.duplicate(
+      user.tenantId,
+      quizId,
+      id,
+      user.membershipId,
+    );
   }
 
   @Delete(':id')

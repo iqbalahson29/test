@@ -1,33 +1,17 @@
 import {
   IsBoolean,
   IsDateString,
-  IsEmail,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
-import { IsStrongPassword } from '../../common/is-strong-password.decorator';
 
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   @MinLength(1)
   name?: string;
-
-  @IsOptional()
-  @IsEmail()
-  email?: string;
-
-  // Required whenever email or newPassword is being changed.
-  @IsOptional()
-  @IsString()
-  currentPassword?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsStrongPassword()
-  newPassword?: string;
 
   // A plain URL or a base64 data: URL for an uploaded photo — bounded well
   // above what a resized (256px) JPEG avatar encodes to.

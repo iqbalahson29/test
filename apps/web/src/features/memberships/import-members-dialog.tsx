@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy } from 'lucide-react'
 import { ALL_ROLES, Role } from '@quiz-platform/shared'
 import { ApiError } from '../../lib/api-client'
 import { memberInvitationsApi } from '../member-invitations/api'
@@ -49,14 +48,12 @@ export function ImportMembersDialog() {
   const [defaultRole, setDefaultRole] = useState<Role>(Role.STUDENT)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BulkInvitationResult | null>(null)
-  const [copiedToken, setCopiedToken] = useState<string | null>(null)
 
   const reset = () => {
     setRaw('')
     setDefaultRole(Role.STUDENT)
     setError(null)
     setResult(null)
-    setCopiedToken(null)
   }
 
   const importMutation = useMutation({
@@ -78,13 +75,8 @@ export function ImportMembersDialog() {
       setError('Paste at least one email address')
       return
     }
+    if (entries.length > 50) { setError('Import at most 50 members at once'); return }
     importMutation.mutate()
-  }
-
-  const copyLink = async (token: string) => {
-    await navigator.clipboard.writeText(`${window.location.origin}/accept-invite/${token}`)
-    setCopiedToken(token)
-    setTimeout(() => setCopiedToken(null), 2000)
   }
 
   return (
@@ -125,7 +117,7 @@ export function ImportMembersDialog() {
             {result.invited.length > 0 && (
               <div className="max-h-48 space-y-2 overflow-y-auto">
                 <p className="text-xs font-medium text-muted-foreground">
-                  Share these invite links:
+                  Invitation emails queued:
                 </p>
                 {result.invited.map((r) =>
                   r.status === 'invited' ? (
@@ -134,18 +126,8 @@ export function ImportMembersDialog() {
                       className="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-xs"
                     >
                       <span className="truncate">{r.email}</span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => copyLink(r.token)}
-                      >
-                        {copiedToken === r.token ? (
-                          <Check className="text-emerald-600" />
-                        ) : (
-                          <Copy />
-                        )}
-                      </Button>
+                      <span>Queued</span>
+
                     </div>
                   ) : null,
                 )}

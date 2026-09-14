@@ -54,7 +54,11 @@ export class WorkspaceJoinRequestsController {
     @CurrentUser() user: AccessTokenPayload,
     @Body() dto: UpdateTenantProfileDto,
   ) {
-    return this.joinRequests.updateOwnTenant(user.tenantId, user.membershipId, dto);
+    return this.joinRequests.updateOwnTenant(
+      user.tenantId,
+      user.membershipId,
+      dto,
+    );
   }
 
   // Lets the admin set a custom join code students can use to join
@@ -62,7 +66,10 @@ export class WorkspaceJoinRequestsController {
   @Patch('my-tenant/join-code')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  setJoinCode(@CurrentUser() user: AccessTokenPayload, @Body() dto: SetJoinCodeDto) {
+  setJoinCode(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() dto: SetJoinCodeDto,
+  ) {
     return this.joinRequests.setJoinCode(user.tenantId, user.membershipId, dto);
   }
 
@@ -119,7 +126,10 @@ export class WorkspaceJoinRequestsController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(AuthGuard('jwt'))
-  cancel(@Req() req: Request & { user: AnyTokenPayload }, @Param('id') id: string) {
+  cancel(
+    @Req() req: Request & { user: AnyTokenPayload },
+    @Param('id') id: string,
+  ) {
     return this.joinRequests.cancel(req.user.sub, id);
   }
 

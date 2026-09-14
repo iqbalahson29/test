@@ -1,315 +1,374 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService, JwtSignOptions } from '@nestjs/jwt';
-import { AttemptStatus, Role, TenantRequestStatus, TenantStatus } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { assertPasswordNotReused, pushPasswordHistory } from '../common/password-history';
-import { SESSION_LOCK_TIMEOUT_MS } from '../common/session-lock.constants';
-import { NotificationsService } from '../notifications/notifications.service';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RegisterDto } from './dto/register.dto';
-import { UpdateProfileDto } from './dto/update-profile.dto';
+import { IdentifierService } from './identifier.service';
+import { PasswordService } from './password.service';
 import {
-  AccessTokenPayload,
-  AccountRefreshTokenPayload,
-  AccountTokenPayload,
-  AnyTokenPayload,
-  RefreshTokenPayload,
-  SuperAdminRefreshTokenPayload,
-  SuperAdminTokenPayload,
-  WorkspaceSelectionTokenPayload,
-} from './token.types';
-
-export interface MembershipSummary {
-  membershipId: string;
-  tenantId: string;
-  tenantName: string;
-  role: import('@prisma/client').Role;
-}
-
-type MembershipWithTenant = import('@prisma/client').Membership & {
-  tenant: import('@prisma/client').Tenant;
-};
-
-export type LoginResult =
-  | {
-      status: 'ok';
-      accessToken: string;
-      refreshToken: string;
-      membership: MembershipSummary;
-    }
-  | {
-      status: 'superadmin';
-      accessToken: string;
-      refreshToken: string;
-    }
-  | {
-      status: 'choose-workspace';
-      selectionToken: string;
-      choices: MembershipSummary[];
-    }
-  | {
-      status: 'no-workspace';
-      accessToken: string;
-      refreshToken: string;
-    };
-
-export type RefreshResult = Exclude<LoginResult, { status: 'choose-workspace' }>;
-
-const membershipInclude = { tenant: true } as const;
-
-// How long a "forgot password" link stays usable before the user has to
-// request a fresh one.
-const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
-
+  AuthClock,
+  authError,
+  mailboxLock,
+  plusMs,
+  serial,
+} from './security/primitives';
+import { RateLimitsService } from './security/rate-limits.service';
+import { AuthPolicyService } from './auth-policy.service';
+import { OtpService } from './otp.service';
+import { AuthCompletionService } from './auth-completion.service';
+import { BrowserContext } from './security/cookies';
+import { SessionService } from './session.service';
+import { GoogleService } from './google.service';
+import { MailerService } from '../mailer/mailer.service';
+import { AnyAccessTokenPayload } from './token.types';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { SecurityEventsService } from './security/security-events.service';
 @Injectable()
 export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwt: JwtService,
-    private readonly config: ConfigService,
-    private readonly notifications: NotificationsService,
+    private readonly identifiers: IdentifierService,
+    private readonly passwords: PasswordService,
+    private readonly rates: RateLimitsService,
+    private readonly clock: AuthClock,
+    private readonly policy: AuthPolicyService,
+    private readonly otp: OtpService,
+    private readonly completion: AuthCompletionService,
+    private readonly sessions: SessionService,
+    private readonly googleService: GoogleService,
+    private readonly mail: MailerService,
+    private readonly events: SecurityEventsService,
   ) {}
-
-  async validateUser(email: string, password: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      // No account yet doesn't necessarily mean a typo'd password — it's
-      // also what a still-pending workspace request looks like, since
-      // TenantRequestsService.create() deliberately doesn't create a User
-      // until a superadmin approves it. Surface that distinctly so the
-      // frontend can point them at a status page instead of a generic
-      // "invalid credentials" that reads as if they mistyped something.
-      const pendingRequest = await this.prisma.tenantRequest.findFirst({
-        where: { requesterEmail: email, status: TenantRequestStatus.PENDING },
-      });
-      if (pendingRequest) {
-        throw new ForbiddenException('WORKSPACE_REQUEST_PENDING');
-      }
-      throw new UnauthorizedException('Invalid credentials');
+  async login(identifier: string, password: string, ctx: BrowserContext) {
+    this.policy.enabled();
+    await this.rates.publicGate('login', ctx.source);
+    let email: string;
+    try {
+      email = this.identifiers.normalize(identifier).normalized;
+    } catch {
+      await this.passwords.verify(password, null);
+      throw authError('INVALID_CREDENTIALS', 401);
     }
-    const matches = await bcrypt.compare(password, user.passwordHash);
-    if (!matches) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-    if (user.isSuspended) {
-      throw new ForbiddenException('This account has been suspended');
-    }
-    return user;
-  }
-
-  async login(userId: string): Promise<LoginResult> {
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: { lastLoginAt: new Date() },
-    });
-
-    if (user.isSuperAdmin) {
-      const tokens = await this.issueTokensForSuperAdmin(userId);
-      return { status: 'superadmin', ...tokens };
-    }
-
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId },
-      include: membershipInclude,
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return this.resolveMembershipSession(userId, memberships);
-  }
-
-  /**
-   * Given a user and their current memberships, decides what kind of
-   * session to issue: no-workspace (0), a real scoped session (1), or a
-   * workspace-selection token to pick between several (2+). Shared between
-   * login() (after the password check) and refresh() for 'account-refresh'
-   * tokens — the latter is what lets a 0-membership account transparently
-   * "upgrade" to a real session on its next refresh, once a teacher
-   * approves them or assigns them a quiz, with no extra polling logic.
-   */
-  private async resolveMembershipSession(
-    userId: string,
-    memberships: MembershipWithTenant[],
-  ): Promise<LoginResult> {
-    // A membership in a suspended tenant isn't a usable session — dropped
-    // here rather than surfaced as a pickable/loggable-into choice, so a
-    // suspended workspace behaves like it doesn't exist for its members
-    // (falling back to their other active memberships, or 'no-workspace'
-    // if that was their only one).
-    const active = memberships.filter((m) => m.tenant.status !== TenantStatus.SUSPENDED);
-
-    if (active.length === 0) {
-      const tokens = await this.issueAccountTokens(userId);
-      return { status: 'no-workspace', ...tokens };
-    }
-
-    if (active.length === 1) {
-      const tokens = await this.issueTokensForMembership(active[0]);
-      return { status: 'ok', ...tokens };
-    }
-
-    const selectionToken = await this.signWorkspaceSelectionToken(userId);
-    return {
-      status: 'choose-workspace',
-      selectionToken,
-      choices: active.map((m) => this.toSummary(m)),
-    };
-  }
-
-  private assertTenantActive(tenant: { status: TenantStatus }) {
-    if (tenant.status === TenantStatus.SUSPENDED) {
-      throw new ForbiddenException('This workspace has been suspended');
-    }
-  }
-
-  /** Re-checks account-level suspension from the DB — unlike tenant
-   * suspension (scoped to one membership, already covered by whatever
-   * membership row the caller fetched), a suspended User has to be caught
-   * explicitly since none of the token payloads carry that flag. */
-  private async assertUserActive(userId: string): Promise<void> {
+    await this.rates.loginGate(email, ctx.source);
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { isSuspended: true },
+      where: { emailNormalized: email },
     });
-    if (!user || user.isSuspended) {
-      throw new ForbiddenException('This account has been suspended');
+    const request = !user
+      ? await this.prisma.tenantRequest.findFirst({
+          where: {
+            emailNormalized: email,
+            emailVerifiedAt: { not: null },
+            status: 'PENDING',
+            expiresAt: { gt: this.clock.now() },
+          },
+        })
+      : null;
+    if (
+      !(await this.passwords.verify(
+        password,
+        user?.passwordHash ?? request?.passwordHash,
+      )) ||
+      user?.isSuspended
+    ) {
+      await this.rates.badPassword(email, ctx.source, user?.id);
+      throw authError('INVALID_CREDENTIALS', 401);
     }
-  }
-
-  private async currentTokenVersion(userId: string): Promise<number> {
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { tokenVersion: true },
+    this.policy.enabled(email);
+    const outcome = await serial(this.prisma, async (tx) => {
+      if (!user) {
+        const r = await tx.tenantRequest.findUnique({
+          where: { id: request!.id },
+        });
+        if (
+          !r ||
+          r.passwordHash !== request!.passwordHash ||
+          r.expiresAt <= this.clock.now() ||
+          r.status !== 'PENDING'
+        )
+          throw authError('INVALID_CREDENTIALS', 401);
+        return {
+          challenge: await this.otp.create(
+            tx,
+            {
+              purpose: 'LOGIN_VERIFY',
+              principalKind: 'TENANT_REQUEST',
+              tenantRequestId: r.id,
+              emailNormalized: email,
+              firstFactor: 'PASSWORD',
+              firstFactorAt: this.clock.now(),
+            },
+            ctx,
+          ),
+        };
+      }
+      const live = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      if (
+        live.passwordHash !== user.passwordHash ||
+        live.tokenVersion !== user.tokenVersion ||
+        live.isSuspended
+      )
+        throw authError('INVALID_CREDENTIALS', 401);
+      const reasons = await this.policy.reasons(tx, live, ctx.deviceToken);
+      if (reasons.length)
+        return {
+          challenge: await this.otp.create(
+            tx,
+            {
+              purpose: 'LOGIN_VERIFY',
+              principalKind: 'USER',
+              userId: live.id,
+              userTokenVersion: live.tokenVersion,
+              emailNormalized: live.emailNormalized,
+              firstFactor: 'PASSWORD',
+              firstFactorAt: this.clock.now(),
+              loginReasons: reasons,
+            },
+            ctx,
+          ),
+        };
+      return {
+        output: await this.completion.login(tx, live, ctx, {
+          firstFactor: 'PASSWORD',
+          firstFactorAt: this.clock.now(),
+        }),
+      };
     });
-    return user.tokenVersion;
+    return 'challenge' in outcome
+      ? {
+          result: await this.otp.present(outcome.challenge!, ctx),
+          rememberDeviceAllowed:
+            !outcome.challenge!.loginReasons.includes('SUPERADMIN') &&
+            outcome.challenge!.principalKind !== 'TENANT_REQUEST',
+        }
+      : outcome.output;
   }
-
-  /** A refresh token's tokenVersion has to match the DB's current value —
-   * changing the password bumps it, which is what makes every *other*
-   * session's refresh token stop working the moment that refresh token is
-   * next used. */
-  private async assertTokenVersionCurrent(
-    userId: string,
-    tokenVersion: number,
-  ): Promise<void> {
-    const current = await this.currentTokenVersion(userId);
-    if (current !== tokenVersion) {
-      throw new UnauthorizedException('Session expired, please sign in again');
-    }
-  }
-
-  async register(dto: RegisterDto) {
-    const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email },
-    });
-    if (existing) {
-      throw new ConflictException('An account with this email already exists');
-    }
-
-    const passwordHash = await bcrypt.hash(dto.password, 10);
-    const user = await this.prisma.user.create({
-      data: { email: dto.email, name: dto.name, passwordHash },
-    });
-
-    await this.notifications.notifySuperAdmins({
-      type: 'USER_REGISTERED',
-      title: `New user registered: ${user.name}`,
-      body: user.email,
-      link: '/superadmin/users',
-    });
-
-    return { id: user.id, email: user.email, name: user.name };
-  }
-
-  /**
-   * Always resolves the same way regardless of whether the email matches an
-   * account — otherwise the endpoint would let a caller enumerate which
-   * emails are registered. No email provider is wired up yet, so the reset
-   * link is logged server-side; swap the logger.log below for a real send
-   * once one is.
-   */
-  async forgotPassword(email: string): Promise<{ ok: true }> {
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (user && !user.isSuspended) {
-      const token = randomBytes(32).toString('hex');
-      const tokenHash = createHash('sha256').update(token).digest('hex');
-      await this.prisma.passwordResetToken.create({
+  async register(
+    dto: { email: string; name: string; password: string },
+    ctx: BrowserContext,
+  ) {
+    this.policy.enabled();
+    await this.rates.publicGate('register', ctx.source);
+    const email = this.identifiers.normalize(dto.email),
+      hash = await this.passwords.hash(dto.password);
+    const c = await serial(this.prisma, async (tx) => {
+      await mailboxLock(tx, email.normalized);
+      const user = await tx.user.findUnique({
+        where: { emailNormalized: email.normalized },
+      });
+      if (user || !this.mail.allowed(email.normalized)) {
+        if (user?.emailVerifiedAt) {
+          const key = `duplicate:${this.rates.hash('identifier', email.normalized)}`;
+          const recent = await tx.mailOutbox.findFirst({
+            where: {
+              idempotencyKey: { startsWith: key + ':' },
+              createdAt: { gt: plusMs(this.clock.now(), -86400000) },
+            },
+          });
+          if (!recent)
+            await this.mail.queue(
+              tx,
+              user.emailNormalized,
+              'SECURITY',
+              'Someone requested a new account using your email. Your existing credentials were not changed.',
+              { dedupeKey: `${key}:${this.clock.now().toISOString()}` },
+            );
+        }
+        return this.otp.create(
+          tx,
+          {
+            purpose: 'SIGNUP_VERIFY',
+            principalKind: 'DECOY',
+            emailNormalized: email.normalized,
+          },
+          ctx,
+        );
+      }
+      const pending = await tx.pendingRegistration.create({
         data: {
-          userId: user.id,
-          tokenHash,
-          expiresAt: new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS),
+          email: email.raw,
+          emailNormalized: email.normalized,
+          name: dto.name.trim(),
+          provider: 'PASSWORD',
+          passwordHash: hash,
+          contextHash: ctx.contextHash,
+          expiresAt: plusMs(this.clock.now(), 600000),
         },
       });
-      const webOrigin = this.config.get<string>('WEB_ORIGIN', 'http://localhost:5173');
-      const resetLink = `${webOrigin}/reset-password?token=${token}`;
-      this.logger.log(`Password reset requested for ${email}: ${resetLink}`);
-    }
-    return { ok: true };
-  }
-
-  async resetPassword(token: string, newPassword: string): Promise<{ ok: true }> {
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    const resetToken = await this.prisma.passwordResetToken.findUnique({
-      where: { tokenHash },
-    });
-    if (
-      !resetToken ||
-      resetToken.usedAt ||
-      resetToken.expiresAt.getTime() < Date.now()
-    ) {
-      throw new BadRequestException('This reset link is invalid or has expired');
-    }
-
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: resetToken.userId },
-    });
-    await assertPasswordNotReused(
-      newPassword,
-      user.passwordHash,
-      user.previousPasswordHashes,
-    );
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          passwordHash,
-          previousPasswordHashes: pushPasswordHistory(
-            user.previousPasswordHashes,
-            user.passwordHash,
-          ),
-          // Invalidates every existing session's refresh token — whoever
-          // reset the password has to sign back in everywhere.
-          tokenVersion: { increment: 1 },
+      return this.otp.create(
+        tx,
+        {
+          purpose: 'SIGNUP_VERIFY',
+          principalKind: 'REGISTRATION',
+          pendingRegistrationId: pending.id,
+          emailNormalized: email.normalized,
+          firstFactor: 'PASSWORD',
+          firstFactorAt: this.clock.now(),
+          expiresAt: pending.expiresAt,
         },
-      }),
-      this.prisma.passwordResetToken.update({
-        where: { id: resetToken.id },
-        data: { usedAt: new Date() },
-      }),
-      // Any other outstanding reset link for this account is now stale —
-      // deleted rather than left to expire naturally on its own.
-      this.prisma.passwordResetToken.deleteMany({
-        where: { userId: user.id, id: { not: resetToken.id } },
-      }),
-    ]);
-
-    return { ok: true };
+        ctx,
+      );
+    });
+    return this.otp.present(c, ctx, true);
   }
-
-  async getProfile(userId: string, membershipId?: string) {
+  verify(
+    challengeId: string,
+    code: string,
+    rememberDevice: boolean,
+    ctx: BrowserContext,
+    actor?: AnyAccessTokenPayload,
+  ) {
+    return this.otp.verify(
+      challengeId,
+      code,
+      ['SIGNUP_VERIFY', 'LOGIN_VERIFY'],
+      ctx,
+      actor,
+      (tx, c) => this.completion.finish(tx, c, ctx, rememberDevice),
+    );
+  }
+  async google(credential: string, ctx: BrowserContext) {
+    await this.rates.publicGate('google', ctx.source);
+    const facts = await this.googleService.verify(credential);
+    this.policy.enabled(facts.canonical);
+    const outcome = await serial(this.prisma, async (tx) => {
+      await mailboxLock(tx, facts.canonical);
+      await this.googleService.consumeNonce(tx, facts, 'LOGIN', ctx);
+      const identity = await tx.authIdentity.findUnique({
+        where: {
+          provider_providerUserId: {
+            provider: 'GOOGLE',
+            providerUserId: facts.sub,
+          },
+        },
+        include: { user: true },
+      });
+      let user =
+        identity?.user ??
+        (await tx.user.findUnique({
+          where: { emailNormalized: facts.canonical },
+        }));
+      if (!user) {
+        const pending = await tx.pendingRegistration.create({
+          data: {
+            email: facts.email,
+            emailNormalized: facts.canonical,
+            name: facts.name,
+            provider: 'GOOGLE',
+            googleSub: facts.sub,
+            googleEmail: facts.email,
+            googleAuthoritative: facts.authoritative,
+            contextHash: ctx.contextHash,
+            expiresAt: plusMs(this.clock.now(), 600000),
+          },
+        });
+        return {
+          challenge: await this.otp.create(
+            tx,
+            {
+              purpose: 'SIGNUP_VERIFY',
+              principalKind: 'REGISTRATION',
+              pendingRegistrationId: pending.id,
+              emailNormalized: facts.canonical,
+              firstFactor: 'GOOGLE',
+              firstFactorAt: this.clock.now(),
+              expiresAt: pending.expiresAt,
+            },
+            ctx,
+          ),
+        };
+      }
+      if (user.isSuspended) throw authError('INVALID_CREDENTIALS', 401);
+      const other = await tx.authIdentity.findUnique({
+        where: { userId_provider: { userId: user.id, provider: 'GOOGLE' } },
+      });
+      if (other && other.providerUserId !== facts.sub)
+        throw authError('ACCOUNT_LINK_CONFLICT', 409);
+      const reasons = await this.policy.reasons(
+        tx,
+        user,
+        ctx.deviceToken,
+        !facts.authoritative || user.emailNormalized !== facts.canonical,
+      );
+      if (reasons.length)
+        return {
+          challenge: await this.otp.create(
+            tx,
+            {
+              purpose: 'LOGIN_VERIFY',
+              principalKind: 'USER',
+              userId: user.id,
+              userTokenVersion: user.tokenVersion,
+              emailNormalized: user.emailNormalized,
+              firstFactor: 'GOOGLE',
+              firstFactorAt: this.clock.now(),
+              googleSub: facts.sub,
+              googleEmail: facts.email,
+              googleAuthoritative: facts.authoritative,
+              loginReasons: reasons,
+            },
+            ctx,
+          ),
+        };
+      user = await this.completion.link(
+        tx,
+        user,
+        facts.sub,
+        facts.email,
+        facts.authoritative,
+      );
+      return {
+        output: await this.completion.login(tx, user, ctx, {
+          firstFactor: 'GOOGLE',
+          firstFactorAt: this.clock.now(),
+        }),
+      };
+    });
+    return 'challenge' in outcome
+      ? {
+          result: await this.otp.present(outcome.challenge!, ctx),
+          rememberDeviceAllowed:
+            !outcome.challenge!.loginReasons.includes('SUPERADMIN') &&
+            outcome.challenge!.principalKind !== 'TENANT_REQUEST',
+        }
+      : outcome.output;
+  }
+  async requestLink(
+    credential: string,
+    ctx: BrowserContext,
+    actor: AnyAccessTokenPayload,
+  ) {
+    await this.rates.sessionGate('google-link', actor.sessionId, ctx.source);
+    const facts = await this.googleService.verify(credential);
+    return serial(this.prisma, async (tx) => {
+      const s = await this.sessions.live(tx, actor);
+      await this.googleService.consumeNonce(tx, facts, 'LINK', ctx, actor);
+      const existing = await tx.authIdentity.findUnique({
+        where: {
+          provider_providerUserId: {
+            provider: 'GOOGLE',
+            providerUserId: facts.sub,
+          },
+        },
+      });
+      const linked = await tx.authIdentity.findUnique({
+        where: { userId_provider: { userId: actor.sub, provider: 'GOOGLE' } },
+      });
+      if ((existing && existing.userId !== actor.sub) || linked)
+        throw authError('ACCOUNT_LINK_CONFLICT', 409);
+      const expiresAt = plusMs(this.clock.now(), 600000);
+      const link = await tx.pendingGoogleLink.create({
+        data: {
+          userId: actor.sub,
+          sessionId: actor.sessionId,
+          contextHash: ctx.contextHash,
+          googleSub: facts.sub,
+          providerEmail: facts.email,
+          authoritative: facts.authoritative,
+          tokenVersion: s.user.tokenVersion,
+          expiresAt,
+        },
+      });
+      return { pendingLinkId: link.id, expiresAt: expiresAt.toISOString() };
+    });
+  }
+  async getProfile(userId: string, membershipId?: string, sessionId?: string) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
     });
@@ -357,468 +416,52 @@ export class AuthService {
       guardianContact: user.guardianContact,
       memberSince,
       groups,
+      emailVerified: !!user.emailVerifiedAt,
+      passwordPresent: !!user.passwordHash,
+      connectedAccounts: await this.prisma.authIdentity.findMany({
+        where: { userId },
+        select: { provider: true, email: true, lastUsedAt: true },
+      }),
+      pendingEmailChange: await this.prisma.pendingEmailChange.findFirst({
+        where: {
+          userId,
+          completedAt: null,
+          invalidatedAt: null,
+          expiresAt: { gt: this.clock.now() },
+        },
+        select: { newEmail: true, expiresAt: true },
+      }),
+      currentSession: sessionId
+        ? await this.prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+              id: true,
+              context: true,
+              createdAt: true,
+              idleExpiresAt: true,
+              absoluteExpiresAt: true,
+            },
+          })
+        : null,
     };
   }
 
-  async updateProfile(actor: AnyTokenPayload, dto: UpdateProfileDto) {
-    const userId = actor.sub;
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-    });
-
-    // Compare against the actual current value, not just "was email present
-    // in the payload" — a form that always submits the (unchanged) email
-    // alongside a name-only edit shouldn't be treated as an email change.
-    const changingSensitive =
-      (dto.email !== undefined && dto.email !== user.email) ||
-      dto.newPassword !== undefined;
-    if (changingSensitive) {
-      if (!dto.currentPassword) {
-        throw new UnauthorizedException(
-          'Current password is required to change email or password',
-        );
-      }
-      const matches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
-      if (!matches) {
-        throw new UnauthorizedException('Current password is incorrect');
-      }
-    }
-
-    const passwordChanged = dto.newPassword !== undefined;
-    if (passwordChanged) {
-      await assertPasswordNotReused(
-        dto.newPassword!,
-        user.passwordHash,
-        user.previousPasswordHashes,
-      );
-    }
-
-    if (dto.email && dto.email !== user.email) {
-      const existing = await this.prisma.user.findUnique({
-        where: { email: dto.email },
+  async updateProfile(actor: AnyAccessTokenPayload, dto: UpdateProfileDto) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      const updated = await tx.user.update({
+        where: { id: actor.sub },
+        data: {
+          ...dto,
+          dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : undefined,
+        },
       });
-      if (existing) {
-        throw new ConflictException('An account with this email already exists');
-      }
-    }
-
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        name: dto.name ?? undefined,
-        email: dto.email ?? undefined,
-        passwordHash: dto.newPassword
-          ? await bcrypt.hash(dto.newPassword, 10)
-          : undefined,
-        previousPasswordHashes: passwordChanged
-          ? pushPasswordHistory(user.previousPasswordHashes, user.passwordHash)
-          : undefined,
-        // Invalidates every other session's refresh token — the one making
-        // this change is re-issued fresh tokens below, on the new version,
-        // so only it survives.
-        tokenVersion: passwordChanged ? { increment: 1 } : undefined,
-        avatarUrl: dto.avatarUrl ?? undefined,
-        firstName: dto.firstName ?? undefined,
-        lastName: dto.lastName ?? undefined,
-        dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : undefined,
-        bio: dto.bio ?? undefined,
-        phone: dto.phone ?? undefined,
-        location: dto.location ?? undefined,
-        timezone: dto.timezone ?? undefined,
-        locale: dto.locale ?? undefined,
-        emailNotifications: dto.emailNotifications ?? undefined,
-        gradeLevel: dto.gradeLevel ?? undefined,
-        studentId: dto.studentId ?? undefined,
-        guardianName: dto.guardianName ?? undefined,
-        guardianContact: dto.guardianContact ?? undefined,
-      },
+      return {
+        id: updated.id,
+        name: updated.name,
+        email: updated.email,
+        avatarUrl: updated.avatarUrl,
+      };
     });
-    const profile = {
-      id: updated.id,
-      email: updated.email,
-      name: updated.name,
-      avatarUrl: updated.avatarUrl,
-      firstName: updated.firstName,
-      lastName: updated.lastName,
-      dateOfBirth: updated.dateOfBirth,
-      bio: updated.bio,
-      phone: updated.phone,
-      location: updated.location,
-      timezone: updated.timezone,
-      locale: updated.locale,
-      emailNotifications: updated.emailNotifications,
-      gradeLevel: updated.gradeLevel,
-      studentId: updated.studentId,
-      guardianName: updated.guardianName,
-      guardianContact: updated.guardianContact,
-    };
-
-    if (!passwordChanged) {
-      return { profile, tokens: null };
-    }
-    // Bumping tokenVersion above just invalidated this session's own
-    // refresh token too — hand back a fresh pair on the new version so the
-    // person who just changed their password isn't logged out by it.
-    const tokens = await this.reissueTokensForActor(actor);
-    return { profile, tokens };
-  }
-
-  private async reissueTokensForActor(
-    actor: AnyTokenPayload,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
-    if (actor.type === 'access') {
-      const membership = await this.prisma.membership.findUniqueOrThrow({
-        where: { id: actor.membershipId },
-        include: membershipInclude,
-      });
-      return this.issueTokensForMembership(membership, actor.sessionId);
-    }
-    if (actor.type === 'superadmin') {
-      return this.issueTokensForSuperAdmin(actor.sub);
-    }
-    return this.issueAccountTokens(actor.sub);
-  }
-
-  async selectWorkspace(
-    selectionToken: string,
-    membershipId: string,
-  ): Promise<LoginResult> {
-    let payload: WorkspaceSelectionTokenPayload;
-    try {
-      payload = await this.jwt.verifyAsync<WorkspaceSelectionTokenPayload>(
-        selectionToken,
-        { secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET') },
-      );
-    } catch {
-      throw new UnauthorizedException('Invalid or expired selection token');
-    }
-    if (payload.type !== 'workspace-selection') {
-      throw new UnauthorizedException('Invalid token type');
-    }
-
-    // Re-fetched fresh from the DB rather than trusting the earlier login()
-    // response's `choices` list, so a membership removed between login and
-    // selection is naturally rejected here.
-    const membership = await this.prisma.membership.findUnique({
-      where: { id: membershipId },
-      include: membershipInclude,
-    });
-    if (!membership || membership.userId !== payload.sub) {
-      throw new UnauthorizedException('Membership not found for this account');
-    }
-    await this.assertUserActive(payload.sub);
-    this.assertTenantActive(membership.tenant);
-
-    const tokens = await this.issueTokensForMembership(membership);
-    return { status: 'ok', ...tokens };
-  }
-
-  async switchWorkspace(
-    userId: string,
-    membershipId: string,
-  ): Promise<LoginResult> {
-    const membership = await this.prisma.membership.findUnique({
-      where: { id: membershipId },
-      include: membershipInclude,
-    });
-    if (!membership || membership.userId !== userId) {
-      throw new ForbiddenException('You do not have access to that workspace');
-    }
-    await this.assertUserActive(userId);
-    this.assertTenantActive(membership.tenant);
-
-    const tokens = await this.issueTokensForMembership(membership);
-    return { status: 'ok', ...tokens };
-  }
-
-  /**
-   * Lets a platform super admin act with full ADMIN rights inside any
-   * tenant. Upserts a real Membership (creating one, or promoting an
-   * existing non-admin one) rather than forging a scoped token out of thin
-   * air — every domain guard/service (quiz ownership, audit log actor,
-   * "last admin" checks, ...) already assumes a real Membership row, so
-   * this reuses that machinery instead of special-casing super admins
-   * throughout the codebase.
-   */
-  async enterWorkspace(userId: string, tenantId: string): Promise<LoginResult> {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-    if (!tenant) {
-      throw new NotFoundException('Workspace not found');
-    }
-
-    const existing = await this.prisma.membership.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
-      include: membershipInclude,
-    });
-
-    const membership =
-      existing && existing.role === Role.ADMIN
-        ? existing
-        : existing
-          ? await this.prisma.membership.update({
-              where: { id: existing.id },
-              data: { role: Role.ADMIN },
-              include: membershipInclude,
-            })
-          : await this.prisma.membership.create({
-              data: { userId, tenantId, role: Role.ADMIN },
-              include: membershipInclude,
-            });
-
-    const tokens = await this.issueTokensForMembership(membership);
-    return { status: 'ok', ...tokens };
-  }
-
-  /** Reverses enterWorkspace() — re-issues a superadmin session for an
-   * account currently holding a scoped admin session. Re-checks
-   * isSuperAdmin from the DB rather than trusting the caller, since the
-   * access token being presented here is an ordinary 'access' token with
-   * no super-admin marker of its own. */
-  async exitToSuperAdmin(userId: string): Promise<LoginResult> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || !user.isSuperAdmin) {
-      throw new ForbiddenException('Not a super admin account');
-    }
-    const tokens = await this.issueTokensForSuperAdmin(userId);
-    return { status: 'superadmin', ...tokens };
-  }
-
-  async myMemberships(userId: string): Promise<MembershipSummary[]> {
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId },
-      include: membershipInclude,
-      orderBy: { createdAt: 'asc' },
-    });
-    return memberships.map((m) => this.toSummary(m));
-  }
-
-  async refresh(refreshToken: string): Promise<RefreshResult> {
-    let payload:
-      | RefreshTokenPayload
-      | SuperAdminRefreshTokenPayload
-      | AccountRefreshTokenPayload;
-    try {
-      payload = await this.jwt.verifyAsync<
-        RefreshTokenPayload | SuperAdminRefreshTokenPayload | AccountRefreshTokenPayload
-      >(refreshToken, {
-        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    if (payload.type === 'superadmin-refresh') {
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-      if (!user || !user.isSuperAdmin) {
-        throw new UnauthorizedException('Invalid refresh token');
-      }
-      if (user.tokenVersion !== payload.tokenVersion) {
-        throw new UnauthorizedException('Session expired, please sign in again');
-      }
-      const tokens = await this.issueTokensForSuperAdmin(user.id);
-      return { status: 'superadmin', ...tokens };
-    }
-
-    if (payload.type === 'account-refresh') {
-      await this.assertUserActive(payload.sub);
-      await this.assertTokenVersionCurrent(payload.sub, payload.tokenVersion);
-      // Re-derive fresh from the DB (not just re-issue another account
-      // token) — this is what upgrades a 0-membership session to 'ok' or
-      // 'choose-workspace' automatically once a membership exists.
-      const memberships = await this.prisma.membership.findMany({
-        where: { userId: payload.sub },
-        include: membershipInclude,
-        orderBy: { createdAt: 'asc' },
-      });
-      const result = await this.resolveMembershipSession(payload.sub, memberships);
-      if (result.status === 'choose-workspace') {
-        // A refresh cycle can't complete a workspace pick on its own — the
-        // account-level session simply continues (extremely rare: it'd
-        // require 2+ memberships appearing between two refreshes without
-        // the user ever logging in again to see the picker).
-        const tokens = await this.issueAccountTokens(payload.sub);
-        return { status: 'no-workspace', ...tokens };
-      }
-      return result;
-    }
-
-    if (payload.type !== 'refresh') {
-      throw new UnauthorizedException('Invalid token type');
-    }
-
-    const membership = await this.prisma.membership.findUnique({
-      where: { id: payload.membershipId },
-      include: membershipInclude,
-    });
-    if (!membership || membership.userId !== payload.sub) {
-      throw new UnauthorizedException('Membership no longer exists');
-    }
-    await this.assertUserActive(payload.sub);
-    await this.assertTokenVersionCurrent(payload.sub, payload.tokenVersion);
-    this.assertTenantActive(membership.tenant);
-    const tokens = await this.issueTokensForMembership(membership, payload.sessionId);
-    return { status: 'ok', ...tokens };
-  }
-
-  /**
-   * A live-locked in-progress attempt for this membership means some other
-   * session is currently taking a test as this student — refuses to hand
-   * out a second set of tokens until that lock is released (submitted,
-   * heartbeat goes stale, or a teacher force-releases it). Skipped when
-   * `existingSessionId` is passed: that means we're just refreshing an
-   * already-issued session, not starting a new one, so it can't conflict
-   * with the lock it may itself be holding.
-   */
-  private async assertNoConcurrentTestSession(membershipId: string): Promise<void> {
-    const liveLock = await this.prisma.attempt.findFirst({
-      where: {
-        studentMembershipId: membershipId,
-        status: AttemptStatus.IN_PROGRESS,
-        lockSessionId: { not: null },
-        lastHeartbeatAt: { gt: new Date(Date.now() - SESSION_LOCK_TIMEOUT_MS) },
-      },
-      select: { id: true },
-    });
-    if (liveLock) {
-      throw new ConflictException(
-        'You already have a test open on another device or browser. Finish or close it there before logging in again.',
-      );
-    }
-  }
-
-  private async issueTokensForMembership(
-    membership: import('@prisma/client').Membership & {
-      tenant: import('@prisma/client').Tenant;
-    },
-    existingSessionId?: string,
-  ): Promise<{ accessToken: string; refreshToken: string; membership: MembershipSummary }> {
-    if (!existingSessionId) {
-      await this.assertNoConcurrentTestSession(membership.id);
-    }
-    const sessionId = existingSessionId ?? randomUUID();
-    const tokenVersion = await this.currentTokenVersion(membership.userId);
-
-    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
-    const refreshSecret = this.config.getOrThrow<string>(
-      'JWT_REFRESH_SECRET',
-    );
-
-    const accessPayload: AccessTokenPayload = {
-      sub: membership.userId,
-      membershipId: membership.id,
-      tenantId: membership.tenantId,
-      role: membership.role,
-      type: 'access',
-      sessionId,
-      tokenVersion,
-    };
-    const refreshPayload: RefreshTokenPayload = {
-      sub: membership.userId,
-      membershipId: membership.id,
-      type: 'refresh',
-      sessionId,
-      tokenVersion,
-    };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwt.signAsync(accessPayload, {
-        secret: accessSecret,
-        expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
-      } as JwtSignOptions),
-      this.jwt.signAsync(refreshPayload, {
-        secret: refreshSecret,
-        expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
-      } as JwtSignOptions),
-    ]);
-
-    return { accessToken, refreshToken, membership: this.toSummary(membership) };
-  }
-
-  private async signWorkspaceSelectionToken(userId: string): Promise<string> {
-    const payload: WorkspaceSelectionTokenPayload = {
-      sub: userId,
-      type: 'workspace-selection',
-    };
-    return this.jwt.signAsync(payload, {
-      secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-      expiresIn: '5m',
-    } as JwtSignOptions);
-  }
-
-  private async issueAccountTokens(
-    userId: string,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
-    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
-    const refreshSecret = this.config.getOrThrow<string>('JWT_REFRESH_SECRET');
-    const tokenVersion = await this.currentTokenVersion(userId);
-
-    const accessPayload: AccountTokenPayload = { sub: userId, type: 'account', tokenVersion };
-    const refreshPayload: AccountRefreshTokenPayload = {
-      sub: userId,
-      type: 'account-refresh',
-      tokenVersion,
-    };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwt.signAsync(accessPayload, {
-        secret: accessSecret,
-        expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
-      } as JwtSignOptions),
-      this.jwt.signAsync(refreshPayload, {
-        secret: refreshSecret,
-        expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
-      } as JwtSignOptions),
-    ]);
-
-    return { accessToken, refreshToken };
-  }
-
-  private async issueTokensForSuperAdmin(
-    userId: string,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
-    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
-    const refreshSecret = this.config.getOrThrow<string>(
-      'JWT_REFRESH_SECRET',
-    );
-    const tokenVersion = await this.currentTokenVersion(userId);
-
-    const accessPayload: SuperAdminTokenPayload = {
-      sub: userId,
-      type: 'superadmin',
-      tokenVersion,
-    };
-    const refreshPayload: SuperAdminRefreshTokenPayload = {
-      sub: userId,
-      type: 'superadmin-refresh',
-      tokenVersion,
-    };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwt.signAsync(accessPayload, {
-        secret: accessSecret,
-        expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
-      } as JwtSignOptions),
-      this.jwt.signAsync(refreshPayload, {
-        secret: refreshSecret,
-        expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
-      } as JwtSignOptions),
-    ]);
-
-    return { accessToken, refreshToken };
-  }
-
-  private toSummary(
-    membership: import('@prisma/client').Membership & {
-      tenant: import('@prisma/client').Tenant;
-    },
-  ): MembershipSummary {
-    return {
-      membershipId: membership.id,
-      tenantId: membership.tenantId,
-      tenantName: membership.tenant.name,
-      role: membership.role,
-    };
   }
 }

@@ -1,41 +1,32 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import {
+  request,
+  makeApp,
+  fixtureLogin,
+  fixtureTenantAdmin,
+  str,
+  list,
+  must,
+} from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-import { fillRemainingPracticeModules, submitAllPracticeModules } from './module-test-helpers';
+import {
+  fillRemainingPracticeModules,
+  submitAllPracticeModules,
+} from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string, password = 'password123') {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
 // Requests + approves a brand-new one-tenant workspace via the platform
 // super admin, to get an admin token scoped to a *different* tenant than
 // acme-school — used to exercise tenant isolation.
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
-  const superadmin = await login(app, 'superadmin@quiz-platform.test');
-  const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
-  const password = 'Password123';
-  const reqRes = await request(app.getHttpServer())
-    .post('/tenant-requests')
-    .send({
-      workspaceName: `Beta ${label} ${Date.now()}`,
-      requesterName: 'Beta Admin',
-      requesterEmail: email,
-      password,
-    })
-    .expect(201);
-  await request(app.getHttpServer())
-    .post(`/tenant-requests/${reqRes.body.id}/approve`)
-    .set('Authorization', `Bearer ${superadmin.accessToken}`)
-    .expect(201);
-  const adminLogin = await login(app, email, password);
-  return { token: adminLogin.accessToken as string, email };
+  return fixtureTenantAdmin(app, label);
 }
 
 describe('Practice grading (e2e)', () => {
@@ -46,14 +37,7 @@ describe('Practice grading (e2e)', () => {
   let studentMembershipId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -67,8 +51,8 @@ describe('Practice grading (e2e)', () => {
       .get('/memberships')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    studentMembershipId = (
-      members.body as { id: string; user: { email: string } }[]
+    studentMembershipId = list<{ id: string; user: { email: string } }>(
+      members.body,
     ).find((m) => m.user.email === 'student@acme.test')!.id;
   });
 
@@ -101,11 +85,12 @@ describe('Practice grading (e2e)', () => {
         ],
       })
       .expect(201);
-    const correctIds = mcq.body.options
+    const correctIds = list(mcq.body.options)
       .filter((o: { isCorrect: boolean }) => o.isCorrect)
       .map((o: { id: string }) => o.id);
-    const wrongId = mcq.body.options.find(
-      (o: { isCorrect: boolean }) => !o.isCorrect,
+    const wrongId = must(
+      list(mcq.body.options).find((o: { isCorrect: boolean }) => !o.isCorrect),
+      'an incorrect option',
     ).id;
 
     const numeric = await request(app.getHttpServer())
@@ -123,17 +108,31 @@ describe('Practice grading (e2e)', () => {
     const essay = await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'Explain.', points: 5, config: {} })
+      .send({
+        type: 'ESSAY',
+        module: 'RW_MODULE_1',
+        prompt: 'Explain.',
+        points: 5,
+        config: {},
+      })
       .expect(201);
 
     // A second essay the student will leave unanswered entirely.
     const skippedEssay = await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'Skip me.', points: 3, config: {} })
+      .send({
+        type: 'ESSAY',
+        module: 'RW_MODULE_1',
+        prompt: 'Skip me.',
+        points: 3,
+        config: {},
+      })
       .expect(201);
 
-    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
+    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, [
+      'RW_MODULE_1',
+    ]);
 
     await request(app.getHttpServer())
       .patch(`/practice-quizzes/${quizId}/status`)
@@ -157,31 +156,37 @@ describe('Practice grading (e2e)', () => {
     // 2 correct + 1 incorrect selected of 3 total correct options:
     // 4 * max(0, 2-1)/3 = 1.33
     await request(app.getHttpServer())
-      .patch(`/practice-attempts/${attemptId}/responses/${mcq.body.id}`)
+      .patch(`/practice-attempts/${attemptId}/responses/${str(mcq.body.id)}`)
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { optionIds: [correctIds[0], correctIds[1], wrongId] } })
       .expect(200);
 
     // Within tolerance (10.5 vs correctAnswer 10, tolerance 1) -> full 2 points.
     await request(app.getHttpServer())
-      .patch(`/practice-attempts/${attemptId}/responses/${numeric.body.id}`)
+      .patch(
+        `/practice-attempts/${attemptId}/responses/${str(numeric.body.id)}`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { value: 10.5 } })
       .expect(200);
 
     await request(app.getHttpServer())
-      .patch(`/practice-attempts/${attemptId}/responses/${essay.body.id}`)
+      .patch(`/practice-attempts/${attemptId}/responses/${str(essay.body.id)}`)
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ answer: { text: 'My essay answer.' } })
       .expect(200);
 
     // skippedEssay intentionally left with no autosaved response.
 
-    const submitRes = await submitAllPracticeModules(app, studentToken, attemptId);
+    const submitRes = await submitAllPracticeModules(
+      app,
+      studentToken,
+      attemptId,
+    );
 
     expect(submitRes.status).toBe('SUBMITTED');
-    expect((submitRes as { score: unknown }).score).toBeNull();
-    expect(Number((submitRes as { maxScore: unknown }).maxScore)).toBe(14);
+    expect(submitRes.score).toBeNull();
+    expect(Number(submitRes.maxScore)).toBe(14);
     const submittedQuestions = submitRes.questions as {
       id: string;
       awardedPoints: string | null;
@@ -198,23 +203,29 @@ describe('Practice grading (e2e)', () => {
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
     expect(queue.body).toHaveLength(2);
-    const skippedEntry = queue.body.find(
-      (r: { questionId: string }) => r.questionId === skippedEssay.body.id,
+    const skippedEntry = must(
+      list(queue.body).find(
+        (r: { questionId: string }) => r.questionId === skippedEssay.body.id,
+      ),
+      'skipped-essay queue entry',
     );
     expect(skippedEntry.answer).toBeNull();
-    const essayEntry = queue.body.find(
-      (r: { questionId: string }) => r.questionId === essay.body.id,
+    const essayEntry = must(
+      list(queue.body).find(
+        (r: { questionId: string }) => r.questionId === essay.body.id,
+      ),
+      'essay queue entry',
     );
 
     // Rejects a grade above the question's max points.
     await request(app.getHttpServer())
-      .post(`/practice-responses/${essayEntry.responseId}/grade`)
+      .post(`/practice-responses/${str(essayEntry.responseId)}/grade`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({ awardedPoints: 99 })
       .expect(400);
 
     await request(app.getHttpServer())
-      .post(`/practice-responses/${essayEntry.responseId}/grade`)
+      .post(`/practice-responses/${str(essayEntry.responseId)}/grade`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({ awardedPoints: 4, feedback: 'Good but incomplete.' })
       .expect(201);
@@ -227,7 +238,7 @@ describe('Practice grading (e2e)', () => {
     expect(midway.body.status).toBe('SUBMITTED');
 
     await request(app.getHttpServer())
-      .post(`/practice-responses/${skippedEntry.responseId}/grade`)
+      .post(`/practice-responses/${str(skippedEntry.responseId)}/grade`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({ awardedPoints: 0, feedback: 'No answer submitted.' })
       .expect(201);
@@ -244,8 +255,8 @@ describe('Practice grading (e2e)', () => {
       .get('/practice-assignments/mine')
       .set('Authorization', `Bearer ${studentToken}`)
       .expect(200);
-    const mineEntry = (
-      mine.body as { quizId: string; status: string; score: string }[]
+    const mineEntry = list<{ quizId: string; status: string; score: string }>(
+      mine.body,
     ).find((a) => a.quizId === quizId)!;
     expect(mineEntry.status).toBe('GRADED');
     expect(Number(mineEntry.score)).toBeCloseTo(7.33, 2);
@@ -261,9 +272,17 @@ describe('Practice grading (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {} })
+      .send({
+        type: 'ESSAY',
+        module: 'RW_MODULE_1',
+        prompt: 'x',
+        points: 1,
+        config: {},
+      })
       .expect(201);
-    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
+    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, [
+      'RW_MODULE_1',
+    ]);
     await request(app.getHttpServer())
       .patch(`/practice-quizzes/${quizId}/status`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
@@ -279,7 +298,7 @@ describe('Practice grading (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ quizId })
       .expect(201);
-    await submitAllPracticeModules(app, studentToken, start.body.id);
+    await submitAllPracticeModules(app, studentToken, str(start.body.id));
 
     await request(app.getHttpServer())
       .get(`/practice-quizzes/${quizId}/grading-queue`)
@@ -290,7 +309,7 @@ describe('Practice grading (e2e)', () => {
       .get(`/practice-quizzes/${quizId}/grading-queue`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    const responseId = queue.body[0].responseId as string;
+    const responseId = str(list(queue.body)[0].responseId);
 
     await request(app.getHttpServer())
       .post(`/practice-responses/${responseId}/grade`)

@@ -1,13 +1,13 @@
+import { AccountSecurity } from './account-security'
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ChevronDown, Upload } from 'lucide-react'
+import { ArrowLeft, Upload } from 'lucide-react'
 import { ApiError, apiGet, apiPatch } from '../lib/api-client'
 import { resizeImageToDataUrl } from '../lib/image-resize'
 import { useAuth } from './auth-context'
 import { AppShell } from './app-shell'
-import { setAccessToken } from './token-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,7 +16,6 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -26,10 +25,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-
-interface ProfileUpdateResponse {
-  accessToken?: string
-}
 
 interface ProfileResponse {
   id: string
@@ -154,136 +149,6 @@ function initials(name: string) {
 
 const MAX_AVATAR_FILE_BYTES = 8 * 1024 * 1024
 
-function ChangePasswordCard() {
-  const [open, setOpen] = useState(false)
-  const [currentPassword, setCurrentPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-
-  const passwordsMismatch = confirmPassword.length > 0 && confirmPassword !== newPassword
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    setSuccess(false)
-    if (newPassword !== confirmPassword) {
-      setError("New password and confirmation don't match")
-      return
-    }
-    setSubmitting(true)
-    try {
-      const res = await apiPatch<ProfileUpdateResponse>('/auth/profile', {
-        currentPassword,
-        newPassword,
-      })
-      if (res.accessToken) {
-        // The server rotated this session's tokens onto the new
-        // tokenVersion (every other session was just signed out) — keep
-        // this tab in sync with its own new access token.
-        setAccessToken(res.accessToken)
-      }
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-      setSuccess(true)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not change password')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <Card className="rounded-none">
-        <CardHeader className="flex items-center justify-between gap-4">
-          <div>
-            <CardTitle>Change password</CardTitle>
-            <CardDescription>
-              Changing your password signs you out of every other device and browser — this
-              one stays signed in.
-            </CardDescription>
-          </div>
-          <CollapsibleTrigger className="group shrink-0 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
-            <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent>
-            <form onSubmit={onSubmit} className="space-y-4">
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-              {success && (
-                <Alert>
-                  <AlertDescription>
-                    Password changed. Every other session has been signed out.
-                  </AlertDescription>
-                </Alert>
-              )}
-              <div className="space-y-1.5 sm:w-1/2 sm:pr-2">
-                <Label htmlFor="current-password">Current password</Label>
-                <Input
-                  id="current-password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="new-password">New password</Label>
-                  <Input
-                    id="new-password"
-                    type="password"
-                    required
-                    minLength={10}
-                    maxLength={72}
-                    autoComplete="new-password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="confirm-password">Confirm new password</Label>
-                  <Input
-                    id="confirm-password"
-                    type="password"
-                    required
-                    minLength={10}
-                    maxLength={72}
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    aria-invalid={passwordsMismatch}
-                  />
-                  {passwordsMismatch && (
-                    <p className="text-xs text-destructive">Passwords don't match.</p>
-                  )}
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                At least 10 characters, with an uppercase letter, a lowercase letter, and a
-                number. Can't reuse a recent password.
-              </p>
-              <Button type="submit" variant="destructive" disabled={submitting}>
-                {submitting ? 'Changing password…' : 'Change password'}
-              </Button>
-            </form>
-          </CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
-  )
-}
-
 export function ProfilePage() {
   const { membership } = useAuth()
   const isStudent = membership?.role === 'STUDENT'
@@ -296,8 +161,6 @@ export function ProfilePage() {
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [initialEmail, setInitialEmail] = useState('')
-  const [emailCurrentPassword, setEmailCurrentPassword] = useState('')
   const [details, setDetails] = useState<ProfileDetails>(emptyDetails)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -310,7 +173,6 @@ export function ProfilePage() {
     if (profile) {
       setName(profile.name)
       setEmail(profile.email)
-      setInitialEmail(profile.email)
       setDetails({
         avatarUrl: profile.avatarUrl ?? '',
         firstName: profile.firstName ?? '',
@@ -354,7 +216,7 @@ export function ProfilePage() {
     }
   }
 
-  const changingEmail = email !== initialEmail
+
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -364,8 +226,6 @@ export function ProfilePage() {
     try {
       await apiPatch('/auth/profile', {
         name,
-        email,
-        currentPassword: emailCurrentPassword || undefined,
         avatarUrl: details.avatarUrl,
         firstName: details.firstName,
         lastName: details.lastName,
@@ -381,8 +241,6 @@ export function ProfilePage() {
         guardianName: details.guardianName,
         guardianContact: details.guardianContact,
       })
-      setEmailCurrentPassword('')
-      setInitialEmail(email)
       setSuccess(true)
       queryClient.invalidateQueries({ queryKey: ['profile'] })
     } catch (err) {
@@ -432,30 +290,11 @@ export function ProfilePage() {
                 id="email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                readOnly disabled
               />
             </div>
           </div>
-          {changingEmail && (
-            <>
-              <Separator />
-              <div className="space-y-1.5">
-                <Label htmlFor="email-current-password">Current password</Label>
-                <Input
-                  id="email-current-password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  className="sm:w-1/2"
-                  value={emailCurrentPassword}
-                  onChange={(e) => setEmailCurrentPassword(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Required to confirm an email change.
-                </p>
-              </div>
-            </>
-          )}
+
         </CardContent>
       </Card>
 
@@ -735,7 +574,7 @@ export function ProfilePage() {
     </form>
 
     <div className="mt-6">
-      <ChangePasswordCard />
+      <AccountSecurity />
     </div>
     </>
   )

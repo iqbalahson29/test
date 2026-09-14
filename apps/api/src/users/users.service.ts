@@ -1,19 +1,23 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { assertPasswordNotReused, pushPasswordHistory } from '../common/password-history';
+import { SessionService } from '../auth/session.service';
+import { serial, authError, Tx } from '../auth/security/primitives';
+import { SecurityEventsService } from '../auth/security/security-events.service';
+import type { AnyAccessTokenPayload } from '../auth/token.types';
+import { normalizeIdentifier } from '@quiz-platform/shared';
 import { PrismaService } from '../prisma/prisma.service';
-import { DeleteUserDto } from './dto/delete-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessions: SessionService,
+    private readonly events: SecurityEventsService,
+  ) {}
 
   async listForSuperAdmin() {
     const users = await this.prisma.user.findMany({
@@ -25,11 +29,19 @@ export class UsersService {
       },
     });
 
+    const recipients = await this.prisma.mailRecipient.findMany({
+      where: { emailCanonical: { in: users.map((u) => u.emailNormalized) } },
+      select: { emailCanonical: true, state: true },
+    });
+    const states = new Map(recipients.map((r) => [r.emailCanonical, r.state]));
     return users.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,
       isSuperAdmin: u.isSuperAdmin,
+      emailVerified: !!u.emailVerifiedAt,
+      emailNormalized: u.emailNormalized,
+      emailSuppressed: states.get(u.emailNormalized) === 'SUPPRESSED',
       isSuspended: u.isSuspended,
       suspendedAt: u.suspendedAt,
       lastLoginAt: u.lastLoginAt,
@@ -42,71 +54,68 @@ export class UsersService {
     }));
   }
 
-  async update(userId: string, dto: UpdateUserDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-    if (dto.email && dto.email !== user.email) {
-      const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
-      if (existing) {
-        throw new ConflictException('An account with this email already exists');
-      }
-    }
-    if (dto.newPassword) {
-      await assertPasswordNotReused(dto.newPassword, user.passwordHash, user.previousPasswordHashes);
-    }
-
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        name: dto.name ?? undefined,
-        email: dto.email ?? undefined,
-        passwordHash: dto.newPassword ? await bcrypt.hash(dto.newPassword, 10) : undefined,
-        previousPasswordHashes: dto.newPassword
-          ? pushPasswordHistory(user.previousPasswordHashes, user.passwordHash)
-          : undefined,
-        // An admin-initiated reset (no currentPassword check, unlike the
-        // user's own profile page) should log the account out everywhere —
-        // that's the whole point of resetting a possibly-compromised
-        // password.
-        tokenVersion: dto.newPassword ? { increment: 1 } : undefined,
-      },
+  async suspend(userId: string, actor: AnyAccessTokenPayload) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      await this.assertNotLastSuperadmin(tx, userId);
+      const updated = await tx.user.update({
+        where: { id: userId },
+        data: {
+          isSuspended: true,
+          suspendedAt: new Date(),
+          tokenVersion: { increment: 1 },
+        },
+      });
+      await this.sessions.invalidateUser(tx, userId, 'user-suspended');
+      await this.events.record(
+        tx,
+        'USER_SUSPENDED',
+        actor.sub,
+        actor.sessionId,
+        { targetUserId: userId },
+      );
+      return {
+        id: updated.id,
+        isSuspended: updated.isSuspended,
+        suspendedAt: updated.suspendedAt,
+      };
     });
-    return { id: updated.id, name: updated.name, email: updated.email };
+  }
+  private async assertNotLastSuperadmin(tx: Tx, userId: string) {
+    await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${'superadmin-management'},0))`;
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    if (!user) throw authError('NOT_FOUND', 404);
+    if (
+      user.isSuperAdmin &&
+      !user.isSuspended &&
+      (await tx.user.count({
+        where: { isSuperAdmin: true, isSuspended: false },
+      })) <= 1
+    )
+      throw authError('LAST_SUPERADMIN', 409);
   }
 
-  async suspend(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-    if (user.isSuperAdmin) {
-      throw new BadRequestException('Super admin accounts cannot be suspended');
-    }
-    if (user.isSuspended) {
-      throw new BadRequestException('This account is already suspended');
-    }
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { isSuspended: true, suspendedAt: new Date() },
+  async reactivate(userId: string, actor: AnyAccessTokenPayload) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user) throw authError('NOT_FOUND', 404);
+      if (!user.isSuspended) throw authError('ALREADY_ACTIVE');
+      const updated = await tx.user.update({
+        where: { id: userId },
+        data: { isSuspended: false, suspendedAt: null },
+      });
+      await this.events.record(
+        tx,
+        'USER_REACTIVATED',
+        actor.sub,
+        actor.sessionId,
+        { targetUserId: userId },
+      );
+      return { id: updated.id, isSuspended: false, suspendedAt: null };
     });
-    return { id: updated.id, isSuspended: updated.isSuspended, suspendedAt: updated.suspendedAt };
-  }
-
-  async reactivate(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-    if (!user.isSuspended) {
-      throw new BadRequestException('This account is already active');
-    }
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { isSuspended: false, suspendedAt: null },
-    });
-    return { id: updated.id, isSuspended: updated.isSuspended, suspendedAt: updated.suspendedAt };
   }
 
   /**
@@ -123,52 +132,64 @@ export class UsersService {
    *  - a user who is the *only* admin of a tenant would leave it with no
    *    admin at all.
    */
-  async remove(userId: string, emailConfirmation: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-    if (user.isSuperAdmin) {
-      throw new BadRequestException('Super admin accounts cannot be deleted');
-    }
-    if (user.email !== emailConfirmation) {
-      throw new BadRequestException('Email confirmation does not match');
-    }
+  async remove(
+    userId: string,
+    emailConfirmation: string,
+    actor: AnyAccessTokenPayload,
+  ) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.type !== 'superadmin') throw authError('FORBIDDEN', 403);
+      await this.assertNotLastSuperadmin(tx, userId);
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+      if (
+        user.emailNormalized !==
+        normalizeIdentifier(emailConfirmation).normalized
+      ) {
+        throw new BadRequestException('Email confirmation does not match');
+      }
 
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId },
-      include: { tenant: { select: { name: true } } },
-    });
-
-    for (const m of memberships.filter((m) => m.role === Role.ADMIN)) {
-      const adminCount = await this.prisma.membership.count({
-        where: { tenantId: m.tenantId, role: Role.ADMIN },
+      const memberships = await tx.membership.findMany({
+        where: { userId },
+        include: { tenant: { select: { name: true } } },
       });
-      if (adminCount <= 1) {
-        throw new BadRequestException(
-          `Cannot delete: this user is the only admin of "${m.tenant.name}". Promote another member to admin there first, or delete that workspace instead.`,
-        );
-      }
-    }
 
-    const membershipIds = memberships.map((m) => m.id);
-    if (membershipIds.length > 0) {
-      const [createdQuiz, assignedQuiz] = await Promise.all([
-        this.prisma.quiz.findFirst({
-          where: { createdByMembershipId: { in: membershipIds } },
-        }),
-        this.prisma.quizAssignment.findFirst({
-          where: { assignedByMembershipId: { in: membershipIds } },
-        }),
-      ]);
-      if (createdQuiz || assignedQuiz) {
-        throw new BadRequestException(
-          'Cannot delete: this user has created quizzes or assignments still in use. Remove or reassign that content first, or delete the workspace instead.',
-        );
+      for (const m of memberships.filter((m) => m.role === Role.ADMIN)) {
+        const adminCount = await tx.membership.count({
+          where: { tenantId: m.tenantId, role: Role.ADMIN },
+        });
+        if (adminCount <= 1) {
+          throw new BadRequestException(
+            `Cannot delete: this user is the only admin of "${m.tenant.name}". Promote another member to admin there first, or delete that workspace instead.`,
+          );
+        }
       }
-    }
 
-    await this.prisma.user.delete({ where: { id: userId } });
-    return { id: userId };
+      const membershipIds = memberships.map((m) => m.id);
+      if (membershipIds.length > 0) {
+        const [createdQuiz, assignedQuiz] = await Promise.all([
+          tx.quiz.findFirst({
+            where: { createdByMembershipId: { in: membershipIds } },
+          }),
+          tx.quizAssignment.findFirst({
+            where: { assignedByMembershipId: { in: membershipIds } },
+          }),
+        ]);
+        if (createdQuiz || assignedQuiz) {
+          throw new BadRequestException(
+            'Cannot delete: this user has created quizzes or assignments still in use. Remove or reassign that content first, or delete the workspace instead.',
+          );
+        }
+      }
+
+      await this.events.record(tx, 'USER_DELETED', actor.sub, actor.sessionId, {
+        targetUserId: userId,
+      });
+      await tx.user.delete({ where: { id: userId } });
+      return { id: userId };
+    });
   }
 }

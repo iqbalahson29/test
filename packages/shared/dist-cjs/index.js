@@ -24,6 +24,7 @@ __export(index_exports, {
   ALL_QUESTION_TYPES: () => ALL_QUESTION_TYPES,
   ALL_QUIZ_MODULES: () => ALL_QUIZ_MODULES,
   ALL_ROLES: () => ALL_ROLES,
+  AUTH_ACTIONS: () => AUTH_ACTIONS,
   AUTO_GRADABLE_TYPES: () => AUTO_GRADABLE_TYPES,
   OPTION_BASED_TYPES: () => OPTION_BASED_TYPES,
   QUIZ_MODULE_LABELS: () => QUIZ_MODULE_LABELS,
@@ -45,7 +46,9 @@ __export(index_exports, {
   fillBlankConfigSchema: () => fillBlankConfigSchema,
   getAnswerSchema: () => getAnswerSchema,
   getQuestionConfigSchema: () => getQuestionConfigSchema,
+  isStrongPassword: () => isStrongPassword,
   isSubjectBoundary: () => isSubjectBoundary,
+  maskEmail: () => maskEmail,
   matchingAnswerSchema: () => matchingAnswerSchema,
   matchingConfigSchema: () => matchingConfigSchema,
   mcqMultiAnswerSchema: () => mcqMultiAnswerSchema,
@@ -53,14 +56,17 @@ __export(index_exports, {
   mcqSingleAnswerSchema: () => mcqSingleAnswerSchema,
   mcqSingleConfigSchema: () => mcqSingleConfigSchema,
   moduleAllowsCalculator: () => moduleAllowsCalculator,
+  normalizeIdentifier: () => normalizeIdentifier,
   numericAnswerSchema: () => numericAnswerSchema,
   numericConfigSchema: () => numericConfigSchema,
+  passwordChecks: () => passwordChecks,
   questionConfigSchemaByType: () => questionConfigSchemaByType,
   questionOptionSchema: () => questionOptionSchema,
   shortTextAnswerSchema: () => shortTextAnswerSchema,
   shortTextConfigSchema: () => shortTextConfigSchema,
   trueFalseAnswerSchema: () => trueFalseAnswerSchema,
-  trueFalseConfigSchema: () => trueFalseConfigSchema
+  trueFalseConfigSchema: () => trueFalseConfigSchema,
+  validLoginPassword: () => validLoginPassword
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -257,12 +263,51 @@ var TOTAL_QUIZ_TIME_LIMIT_SEC = QUIZ_MODULE_SEQUENCE.reduce(
   (sum, m) => sum + QUIZ_MODULE_TIME_LIMIT_SEC[m],
   0
 );
+
+// src/auth/identifier.ts
+function normalizeIdentifier(value) {
+  if (typeof value !== "string") throw new Error("Enter a valid email address");
+  const raw = value.trim();
+  if (raw.length > 254 || !/^[\x21-\x7e]+$/.test(raw)) throw new Error("Enter a valid email address");
+  const parts = raw.split("@");
+  if (parts.length !== 2) throw new Error("Enter a valid email address");
+  const [local, domain] = parts;
+  if (!local || local.length > 64 || !/^[a-zA-Z0-9!#$%&'*+\-/=?^_`{|}~]+(?:\.[a-zA-Z0-9!#$%&'*+\-/=?^_`{|}~]+)*$/.test(local)) throw new Error("Enter a valid email address");
+  const labels = domain.split(".");
+  if (labels.length < 2 || labels.some((label) => !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label))) throw new Error("Enter a valid email address");
+  const canonicalLocal = local.split("+")[0].toLowerCase();
+  if (!canonicalLocal || canonicalLocal.endsWith(".")) throw new Error("Enter a valid email address");
+  return { raw, normalized: `${canonicalLocal}@${domain.toLowerCase()}`, kind: "EMAIL" };
+}
+function maskEmail(email) {
+  const [local, domain] = normalizeIdentifier(email).normalized.split("@");
+  return `${local[0]}***@${domain}`;
+}
+
+// src/auth/password.ts
+var passwordChecks = [
+  { label: "At least 10 characters", test: (v) => [...v].length >= 10 },
+  { label: "One uppercase letter", test: (v) => /[A-Z]/.test(v) },
+  { label: "One lowercase letter", test: (v) => /[a-z]/.test(v) },
+  { label: "One number", test: (v) => /[0-9]/.test(v) },
+  { label: "At most 72 UTF-8 bytes, without NUL", test: (v) => new TextEncoder().encode(v).length <= 72 && !v.includes("\0") }
+];
+function validLoginPassword(value) {
+  return typeof value === "string" && value.length > 0 && !value.includes("\0") && new TextEncoder().encode(value).length <= 72;
+}
+function isStrongPassword(value) {
+  return typeof value === "string" && passwordChecks.every((check) => check.test(value));
+}
+
+// src/auth/contracts.ts
+var AUTH_ACTIONS = ["PASSWORD_CHANGE", "PASSWORD_SET", "EMAIL_CHANGE_START", "GOOGLE_LINK", "GOOGLE_UNLINK", "ADMIN_EMAIL_CHANGE", "ADMIN_PASSWORD_SET", "ADMIN_SUPPRESSION_CLEAR"];
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ALL_QUESTION_DIFFICULTIES,
   ALL_QUESTION_TYPES,
   ALL_QUIZ_MODULES,
   ALL_ROLES,
+  AUTH_ACTIONS,
   AUTO_GRADABLE_TYPES,
   OPTION_BASED_TYPES,
   QUIZ_MODULE_LABELS,
@@ -284,7 +329,9 @@ var TOTAL_QUIZ_TIME_LIMIT_SEC = QUIZ_MODULE_SEQUENCE.reduce(
   fillBlankConfigSchema,
   getAnswerSchema,
   getQuestionConfigSchema,
+  isStrongPassword,
   isSubjectBoundary,
+  maskEmail,
   matchingAnswerSchema,
   matchingConfigSchema,
   mcqMultiAnswerSchema,
@@ -292,12 +339,15 @@ var TOTAL_QUIZ_TIME_LIMIT_SEC = QUIZ_MODULE_SEQUENCE.reduce(
   mcqSingleAnswerSchema,
   mcqSingleConfigSchema,
   moduleAllowsCalculator,
+  normalizeIdentifier,
   numericAnswerSchema,
   numericConfigSchema,
+  passwordChecks,
   questionConfigSchemaByType,
   questionOptionSchema,
   shortTextAnswerSchema,
   shortTextConfigSchema,
   trueFalseAnswerSchema,
-  trueFalseConfigSchema
+  trueFalseConfigSchema,
+  validLoginPassword
 });

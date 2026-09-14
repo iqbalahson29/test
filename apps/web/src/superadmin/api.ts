@@ -39,6 +39,9 @@ export interface UpdateUserInput {
   name?: string
   email?: string
   newPassword?: string
+  emailChangeGrantToken?:string
+  passwordSetGrantToken?:string
+  reason?:string
 }
 
 export const superAdminApi = {

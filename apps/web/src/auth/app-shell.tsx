@@ -115,6 +115,7 @@ const superAdminNavItems: NavItem[] = [
   { label: 'Workspace requests', href: '/superadmin', icon: Inbox },
   { label: 'Workspaces', href: '/superadmin/workspaces', icon: Building2 },
   { label: 'Users', href: '/superadmin/users', icon: Users },
+  { label: 'Authentication health', href: '/superadmin/auth-health', icon: Users },
 ]
 
 function initials(name: string) {

@@ -1,3 +1,5 @@
+import { useStepUp } from '../auth/use-step-up'
+import { normalizeIdentifier } from '@quiz-platform/shared'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -94,22 +96,25 @@ function EditUserDialog({
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [reason,setReason] = useState('')
+  const step = useStepUp()
 
   useEffect(() => {
     if (user) {
       setName(user.name)
       setEmail(user.email)
-      setNewPassword('')
+      setNewPassword('');setReason('')
     }
   }, [user])
 
   const mutation = useMutation({
-    mutationFn: () =>
-      superAdminApi.updateUser(user!.id, {
-        name,
-        email,
-        newPassword: newPassword || undefined,
-      }),
+    mutationFn: async () => {
+      const changed = normalizeIdentifier(email).normalized !== normalizeIdentifier(user!.email).normalized
+      if ((changed || newPassword) && reason.trim().length < 10) throw new Error('Enter an operator reason of at least 10 characters')
+      const emailChangeGrantToken = changed ? await step.request('ADMIN_EMAIL_CHANGE',{userId:user!.id,email}) : undefined
+      const passwordSetGrantToken = newPassword ? await step.request('ADMIN_PASSWORD_SET',{userId:user!.id}) : undefined
+      return superAdminApi.updateUser(user!.id,{name,email,newPassword:newPassword||undefined,emailChangeGrantToken,passwordSetGrantToken,reason:changed||newPassword?reason:undefined})
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['superadmin-users'] })
       onOpenChange(false)
@@ -119,6 +124,7 @@ function EditUserDialog({
   return (
     <Dialog open={!!user} onOpenChange={(open) => !open && onOpenChange(false)}>
       <DialogContent>
+        {step.view}
         <DialogHeader>
           <DialogTitle>Edit account</DialogTitle>
           <DialogDescription>Update this user's name, email, or password.</DialogDescription>
@@ -169,6 +175,7 @@ function EditUserDialog({
             </p>
           </div>
 
+          <div className="space-y-1.5"><Label htmlFor="edit-reason">Reason for credential changes</Label><Input id="edit-reason" minLength={10} maxLength={500} value={reason} onChange={e=>setReason(e.target.value)}/><p className="text-xs text-muted-foreground">Email changes remove Google sign-in and require email verification at the next login. For Google-only accounts, set a new password in this same operation.</p></div>
           <DialogFooter>
             <Button
               type="button"

@@ -66,7 +66,9 @@ export class AuditLogService {
       case 'ASSIGNMENT_CREATED':
         return detail ? `Assigned to ${detail}` : 'Assigned to a student';
       case 'ASSIGNMENT_REMOVED':
-        return detail ? `Removed assignment for ${detail}` : 'Removed an assignment';
+        return detail
+          ? `Removed assignment for ${detail}`
+          : 'Removed an assignment';
       case 'QUESTION_REGRADED': {
         const base = 'Regraded a question';
         const withDetail = detail ? `${base} — ${detail}` : base;
@@ -80,19 +82,29 @@ export class AuditLogService {
       case 'RESPONSE_GRADED':
         return detail ? `Graded ${detail}'s response` : 'Graded a response';
       case 'MEMBER_ADDED':
-        return detail ? `${detail} added as a new member` : 'Added a new member';
+        return detail
+          ? `${detail} added as a new member`
+          : 'Added a new member';
       case 'MEMBER_REMOVED':
-        return detail ? `Removed ${detail} from the workspace` : 'Removed a member';
+        return detail
+          ? `Removed ${detail} from the workspace`
+          : 'Removed a member';
       case 'MEMBER_ROLE_CHANGED':
         return detail ? `Role updated for ${detail}` : 'Updated a member role';
       case 'MEMBER_JOINED':
-        return detail ? `${detail} joined the workspace` : 'A member joined the workspace';
+        return detail
+          ? `${detail} joined the workspace`
+          : 'A member joined the workspace';
       case 'JOIN_REQUEST_REJECTED':
-        return detail ? `${detail}'s join request was rejected` : 'Rejected a join request';
+        return detail
+          ? `${detail}'s join request was rejected`
+          : 'Rejected a join request';
       case 'MEMBER_INVITED':
         return detail ? `Invited ${detail}` : 'Invited a new member';
       case 'INVITE_ACCEPTED':
-        return detail ? `${detail} accepted their invite` : 'An invite was accepted';
+        return detail
+          ? `${detail} accepted their invite`
+          : 'An invite was accepted';
       case 'INVITE_REVOKED':
         return detail ? `Revoked invite for ${detail}` : 'Revoked an invite';
       case 'WORKSPACE_PROFILE_UPDATED':
@@ -100,7 +112,9 @@ export class AuditLogService {
       case 'WORKSPACE_JOIN_CODE_UPDATED':
         return detail ? detail : 'Updated the workspace join code';
       case 'SESSION_RELEASED':
-        return actorName ? `${detail} (by ${actorName})` : (detail ?? 'Released a test session');
+        return actorName
+          ? `${detail} (by ${actorName})`
+          : (detail ?? 'Released a test session');
       default:
         return action;
     }
@@ -116,7 +130,11 @@ export class AuditLogService {
     return entries.map((e) => ({
       id: e.id,
       action: e.action,
-      message: this.buildMessage(e.action, e.detail, e.actor?.user.name ?? null),
+      message: this.buildMessage(
+        e.action,
+        e.detail,
+        e.actor?.user.name ?? null,
+      ),
       createdAt: e.createdAt,
     }));
   }
@@ -131,7 +149,11 @@ export class AuditLogService {
     return entries.map((e) => ({
       id: e.id,
       action: e.action,
-      message: this.buildMessage(e.action, e.detail, e.actor?.user.name ?? null),
+      message: this.buildMessage(
+        e.action,
+        e.detail,
+        e.actor?.user.name ?? null,
+      ),
       createdAt: e.createdAt,
     }));
   }

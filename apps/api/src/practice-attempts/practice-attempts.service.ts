@@ -18,7 +18,11 @@ import {
   QUIZ_MODULE_TIME_LIMIT_SEC,
   QuizModule as SatModule,
 } from '@quiz-platform/shared';
-import { SESSION_LOCK_TIMEOUT_MS } from '../common/session-lock.constants';
+import {
+  ATTEMPT_LOCK_CONFLICT_MESSAGE,
+  type AttemptLockDelegate,
+  claimAttemptLock,
+} from '../common/session-lock';
 import {
   BankDifficultyRatio,
   BankModuleTargets,
@@ -45,7 +49,7 @@ export class PracticeAttemptsService {
    * type carry identical string values but are nominally distinct types to
    * TypeScript — this is a zero-cost bridge between them. */
   private toSatModule(module: PrismaQuizModule): SatModule {
-    return module as unknown as SatModule;
+    return module;
   }
 
   private async verifyAssigned(
@@ -74,7 +78,10 @@ export class PracticeAttemptsService {
     }
   }
 
-  private async buildAttemptView(attemptId: string, studentMembershipId: string) {
+  private async buildAttemptView(
+    attemptId: string,
+    studentMembershipId: string,
+  ) {
     const attempt = await this.prisma.practiceAttempt.findUnique({
       where: { id: attemptId },
       include: {
@@ -101,7 +108,12 @@ export class PracticeAttemptsService {
     let allQuestions = attempt.quiz.questions;
     let responseByQuestion = new Map<
       string,
-      { answer: Prisma.JsonValue; fileKey: string | null; awardedPoints: Prisma.Decimal | null; feedback: string | null }
+      {
+        answer: Prisma.JsonValue;
+        fileKey: string | null;
+        awardedPoints: Prisma.Decimal | null;
+        feedback: string | null;
+      }
     >(attempt.responses.map((r) => [r.questionId, r]));
     if (attempt.quiz.mode === PracticeQuizMode.BANK) {
       const [snapshotQuestions, snapshotResponses] = await Promise.all([
@@ -116,7 +128,12 @@ export class PracticeAttemptsService {
       responseByQuestion = new Map(
         snapshotResponses.map((r) => [
           r.attemptQuestionId,
-          { answer: r.answer, fileKey: null, awardedPoints: r.awardedPoints, feedback: null },
+          {
+            answer: r.answer,
+            fileKey: null,
+            awardedPoints: r.awardedPoints,
+            feedback: null,
+          },
         ]),
       );
     }
@@ -142,11 +159,16 @@ export class PracticeAttemptsService {
       id: attempt.id,
       quizId: attempt.quizId,
       quizTitle: attempt.quiz.title,
-      currentModule: activeProgress ? this.toSatModule(activeProgress.module) : null,
+      currentModule: activeProgress
+        ? this.toSatModule(activeProgress.module)
+        : null,
       moduleDeadlineAt: activeProgress
         ? new Date(
             activeProgress.startedAt.getTime() +
-              QUIZ_MODULE_TIME_LIMIT_SEC[this.toSatModule(activeProgress.module)] * 1000,
+              QUIZ_MODULE_TIME_LIMIT_SEC[
+                this.toSatModule(activeProgress.module)
+              ] *
+                1000,
           )
         : null,
       completedModules,
@@ -167,7 +189,9 @@ export class PracticeAttemptsService {
         return {
           ...sanitized,
           module: this.toSatModule(q.module),
-          difficulty: attempt.quiz.showDifficultyToStudents ? sanitized.difficulty : null,
+          difficulty: attempt.quiz.showDifficultyToStudents
+            ? sanitized.difficulty
+            : null,
           answer: response?.answer ?? null,
           fileKey: response?.fileKey ?? null,
           awardedPoints: response?.awardedPoints ?? null,
@@ -189,7 +213,8 @@ export class PracticeAttemptsService {
     });
     if (!active) return;
 
-    const limitMs = QUIZ_MODULE_TIME_LIMIT_SEC[this.toSatModule(active.module)] * 1000;
+    const limitMs =
+      QUIZ_MODULE_TIME_LIMIT_SEC[this.toSatModule(active.module)] * 1000;
     if (Date.now() - active.startedAt.getTime() < limitMs) return;
 
     await this.prisma.practiceAttemptModuleProgress.update({
@@ -198,7 +223,8 @@ export class PracticeAttemptsService {
     });
 
     const isLastModule =
-      this.toSatModule(active.module) === QUIZ_MODULE_SEQUENCE[QUIZ_MODULE_SEQUENCE.length - 1];
+      this.toSatModule(active.module) ===
+      QUIZ_MODULE_SEQUENCE[QUIZ_MODULE_SEQUENCE.length - 1];
     if (isLastModule) {
       await this.finalizeAttempt(attemptId);
     }
@@ -208,7 +234,9 @@ export class PracticeAttemptsService {
    * notifies — shared by the last module's explicit completion and by
    * deadline-expiry auto-completion of the last module. */
   private async finalizeAttempt(attemptId: string): Promise<void> {
-    const attempt = await this.prisma.practiceAttempt.findUniqueOrThrow({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUniqueOrThrow({
+      where: { id: attemptId },
+    });
     await this.prisma.practiceAttempt.update({
       where: { id: attemptId },
       data: {
@@ -221,8 +249,12 @@ export class PracticeAttemptsService {
     });
     await this.grading.gradeAttempt(attemptId);
 
-    const quiz = await this.prisma.practiceQuiz.findUniqueOrThrow({ where: { id: attempt.quizId } });
-    const graded = await this.prisma.practiceAttempt.findUniqueOrThrow({ where: { id: attemptId } });
+    const quiz = await this.prisma.practiceQuiz.findUniqueOrThrow({
+      where: { id: attempt.quizId },
+    });
+    const graded = await this.prisma.practiceAttempt.findUniqueOrThrow({
+      where: { id: attemptId },
+    });
     if (graded.status === AttemptStatus.GRADED) {
       await this.notifications.create(attempt.studentMembershipId, {
         tenantId: quiz.tenantId,
@@ -241,33 +273,34 @@ export class PracticeAttemptsService {
     }
   }
 
-  /** True when `attempt`'s session lock is held by a *different*, still-live
-   * session — i.e. some other device is actively taking this attempt right
-   * now. A missing lock, an expired one (no heartbeat within
-   * SESSION_LOCK_TIMEOUT_MS), or one already owned by `sessionId` are all
-   * fair game to (re)claim. */
-  private isLockLiveAndForeign(
-    attempt: { lockSessionId: string | null; lastHeartbeatAt: Date | null },
+  /** Atomically claims or renews an attempt's session lock for `sessionId`.
+   *
+   * Ownership is decided inside a single conditional UPDATE rather than by reading the
+   * row, testing it in JavaScript and writing later: two sessions that both observed the
+   * same expired lock used to both pass that test and both write. Callers run this inside
+   * the transaction that performs the guarded mutation, so the row stays locked for the
+   * whole operation and a competing claim cannot land between the check and the write.
+   *
+   * Returns false when another live session holds the lock. */
+  private claimLock(
+    delegate: AttemptLockDelegate,
+    attemptId: string,
     sessionId: string,
-  ): boolean {
-    if (!attempt.lockSessionId || attempt.lockSessionId === sessionId) {
-      return false;
-    }
-    if (!attempt.lastHeartbeatAt) {
-      return false;
-    }
-    return attempt.lastHeartbeatAt.getTime() > Date.now() - SESSION_LOCK_TIMEOUT_MS;
+    statusFilter: Record<string, unknown> = {},
+  ): Promise<boolean> {
+    return claimAttemptLock(delegate, attemptId, sessionId, statusFilter);
   }
 
-  /** Claims (or refreshes) the session lock for `sessionId`. Called on
-   * start/resume and on every subsequent write to the attempt, so ordinary
-   * activity — not just the dedicated heartbeat endpoint — keeps the lock
-   * alive. */
-  private touchLock(attemptId: string, sessionId: string) {
-    return this.prisma.practiceAttempt.update({
-      where: { id: attemptId },
-      data: { lockSessionId: sessionId, lockedAt: new Date(), lastHeartbeatAt: new Date() },
-    });
+  /** `claimLock`, raising the standard conflict when another live session owns the attempt. */
+  private async requireLock(
+    delegate: AttemptLockDelegate,
+    attemptId: string,
+    sessionId: string,
+    statusFilter: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (!(await this.claimLock(delegate, attemptId, sessionId, statusFilter))) {
+      throw new ForbiddenException(ATTEMPT_LOCK_CONFLICT_MESSAGE);
+    }
   }
 
   async start(
@@ -276,7 +309,9 @@ export class PracticeAttemptsService {
     quizId: string,
     sessionId: string,
   ) {
-    const quiz = await this.prisma.practiceQuiz.findUnique({ where: { id: quizId } });
+    const quiz = await this.prisma.practiceQuiz.findUnique({
+      where: { id: quizId },
+    });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Practice quiz not found');
     }
@@ -290,12 +325,14 @@ export class PracticeAttemptsService {
       where: { quizId, studentMembershipId, status: AttemptStatus.IN_PROGRESS },
     });
     if (existingInProgress) {
-      if (this.isLockLiveAndForeign(existingInProgress, sessionId)) {
-        throw new ForbiddenException(
-          'This test is currently active in another session',
-        );
-      }
-      await this.touchLock(existingInProgress.id, sessionId);
+      await this.requireLock(
+        this.prisma.practiceAttempt,
+        existingInProgress.id,
+        sessionId,
+        {
+          status: AttemptStatus.IN_PROGRESS,
+        },
+      );
       return this.buildAttemptView(existingInProgress.id, studentMembershipId);
     }
 
@@ -307,7 +344,9 @@ export class PracticeAttemptsService {
       },
     });
     if (quiz.maxAttempts != null && priorCount >= quiz.maxAttempts) {
-      throw new BadRequestException('No attempts remaining for this practice quiz');
+      throw new BadRequestException(
+        'No attempts remaining for this practice quiz',
+      );
     }
 
     try {
@@ -329,12 +368,16 @@ export class PracticeAttemptsService {
         // gets an independent draw, fully decoupled from the live bank from
         // this point on.
         if (quiz.mode === PracticeQuizMode.BANK) {
-          const targets = quiz.bankModuleTargets as unknown as BankModuleTargets;
-          const ratio = quiz.bankDifficultyRatio as unknown as BankDifficultyRatio;
+          const targets =
+            quiz.bankModuleTargets as unknown as BankModuleTargets;
+          const ratio =
+            quiz.bankDifficultyRatio as unknown as BankDifficultyRatio;
           for (const sharedModule of QUIZ_MODULE_SEQUENCE) {
-            const module = sharedModule as unknown as PrismaQuizModule;
+            const module = sharedModule;
             const quota = computeDifficultyQuota(targets[module], ratio);
-            const drawn: Prisma.PracticeQuestionGetPayload<{ include: { options: true } }>[] = [];
+            const drawn: Prisma.PracticeQuestionGetPayload<{
+              include: { options: true };
+            }>[] = [];
             for (const difficulty of ['EASY', 'MEDIUM', 'HARD'] as const) {
               if (quota[difficulty] <= 0) continue;
               const pool = await tx.practiceQuestion.findMany({
@@ -382,7 +425,7 @@ export class PracticeAttemptsService {
         await tx.practiceAttemptModuleProgress.create({
           data: {
             attemptId: created.id,
-            module: QUIZ_MODULE_SEQUENCE[0] as unknown as PrismaQuizModule,
+            module: QUIZ_MODULE_SEQUENCE[0],
             startedAt: new Date(),
           },
         });
@@ -393,12 +436,28 @@ export class PracticeAttemptsService {
       // Two concurrent `start` calls (double-click, flaky connection) can both
       // pass the checks above and race on @@unique([quizId, studentMembershipId,
       // attemptNumber]) — the loser joins the winner's attempt instead of 500ing.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
         const concurrent = await this.prisma.practiceAttempt.findFirst({
-          where: { quizId, studentMembershipId, status: AttemptStatus.IN_PROGRESS },
+          where: {
+            quizId,
+            studentMembershipId,
+            status: AttemptStatus.IN_PROGRESS,
+          },
         });
         if (concurrent) {
-          await this.touchLock(concurrent.id, sessionId);
+          // The loser of a simultaneous start joins the winner's attempt, but only when it
+          // is actually claimable: a different live session must still be refused here.
+          await this.requireLock(
+            this.prisma.practiceAttempt,
+            concurrent.id,
+            sessionId,
+            {
+              status: AttemptStatus.IN_PROGRESS,
+            },
+          );
           return this.buildAttemptView(concurrent.id, studentMembershipId);
         }
       }
@@ -408,19 +467,22 @@ export class PracticeAttemptsService {
 
   /** Pinged periodically by the test-taking screen to prove this session is
    * still the one actively taking the attempt — see SESSION_LOCK_TIMEOUT_MS. */
-  async heartbeat(studentMembershipId: string, attemptId: string, sessionId: string) {
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+  async heartbeat(
+    studentMembershipId: string,
+    attemptId: string,
+    sessionId: string,
+  ) {
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
       throw new NotFoundException('Attempt not found');
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       return { ok: true };
     }
-    if (this.isLockLiveAndForeign(attempt, sessionId)) {
-      throw new ForbiddenException('This test is currently active in another session');
-    }
+    await this.requireLock(this.prisma.practiceAttempt, attemptId, sessionId);
     await this.enforceModuleDeadline(attemptId);
-    await this.touchLock(attemptId, sessionId);
     return { ok: true };
   }
 
@@ -452,49 +514,59 @@ export class PracticeAttemptsService {
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is no longer in progress');
     }
-    if (this.isLockLiveAndForeign(attempt, sessionId)) {
-      throw new ForbiddenException('This test is currently active in another session');
-    }
     await this.enforceModuleDeadline(attemptId);
 
-    const activeModule = await this.prisma.practiceAttemptModuleProgress.findFirst({
-      where: { attemptId, submittedAt: null },
-    });
-    if (!activeModule) {
-      throw new BadRequestException('The current module has ended');
-    }
-
     const answer =
-      dto.answer === undefined ? undefined : (dto.answer as Prisma.InputJsonValue);
+      dto.answer === undefined
+        ? undefined
+        : (dto.answer as Prisma.InputJsonValue);
 
-    if (attempt.quiz.mode === PracticeQuizMode.BANK) {
-      const snapshotQuestion = await this.prisma.practiceAttemptQuestion.findUnique({
-        where: { id: questionId },
+    // As in the regular engine: claim, validate and write inside one transaction so a
+    // session that loses ownership commits no answer.
+    await this.prisma.$transaction(async (tx) => {
+      await this.requireLock(tx.practiceAttempt, attemptId, sessionId);
+
+      const activeModule = await tx.practiceAttemptModuleProgress.findFirst({
+        where: { attemptId, submittedAt: null },
       });
-      if (
-        !snapshotQuestion ||
-        snapshotQuestion.attemptId !== attemptId ||
-        snapshotQuestion.module !== activeModule.module
-      ) {
-        throw new NotFoundException('Question not found on this attempt');
+      if (!activeModule) {
+        throw new BadRequestException('The current module has ended');
       }
-      await this.prisma.practiceAttemptResponse.upsert({
-        where: { attemptQuestionId: questionId },
-        update: { answer },
-        create: { attemptId, attemptQuestionId: questionId, answer },
-      });
-    } else {
-      const question = await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
-      if (!question || question.quizId !== attempt.quizId || question.module !== activeModule.module) {
-        throw new NotFoundException('Question not found on this attempt');
+
+      if (attempt.quiz.mode === PracticeQuizMode.BANK) {
+        const snapshotQuestion = await tx.practiceAttemptQuestion.findUnique({
+          where: { id: questionId },
+        });
+        if (
+          !snapshotQuestion ||
+          snapshotQuestion.attemptId !== attemptId ||
+          snapshotQuestion.module !== activeModule.module
+        ) {
+          throw new NotFoundException('Question not found on this attempt');
+        }
+        await tx.practiceAttemptResponse.upsert({
+          where: { attemptQuestionId: questionId },
+          update: { answer },
+          create: { attemptId, attemptQuestionId: questionId, answer },
+        });
+      } else {
+        const question = await tx.practiceQuestion.findUnique({
+          where: { id: questionId },
+        });
+        if (
+          !question ||
+          question.quizId !== attempt.quizId ||
+          question.module !== activeModule.module
+        ) {
+          throw new NotFoundException('Question not found on this attempt');
+        }
+        await tx.practiceResponse.upsert({
+          where: { attemptId_questionId: { attemptId, questionId } },
+          update: { answer, fileKey: dto.fileKey },
+          create: { attemptId, questionId, answer, fileKey: dto.fileKey },
+        });
       }
-      await this.prisma.practiceResponse.upsert({
-        where: { attemptId_questionId: { attemptId, questionId } },
-        update: { answer, fileKey: dto.fileKey },
-        create: { attemptId, questionId, answer, fileKey: dto.fileKey },
-      });
-    }
-    await this.touchLock(attemptId, sessionId);
+    });
     return { ok: true };
   }
 
@@ -505,37 +577,45 @@ export class PracticeAttemptsService {
     dto: RequestPracticeUploadUrlDto,
     sessionId: string,
   ) {
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
       throw new NotFoundException('Attempt not found');
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is no longer in progress');
     }
-    if (this.isLockLiveAndForeign(attempt, sessionId)) {
-      throw new ForbiddenException('This test is currently active in another session');
-    }
+    await this.requireLock(this.prisma.practiceAttempt, attemptId, sessionId);
     await this.enforceModuleDeadline(attemptId);
 
-    const activeModule = await this.prisma.practiceAttemptModuleProgress.findFirst({
-      where: { attemptId, submittedAt: null },
-    });
+    const activeModule =
+      await this.prisma.practiceAttemptModuleProgress.findFirst({
+        where: { attemptId, submittedAt: null },
+      });
     if (!activeModule) {
       throw new BadRequestException('The current module has ended');
     }
 
-    const question = await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
-    if (!question || question.quizId !== attempt.quizId || question.module !== activeModule.module) {
+    const question = await this.prisma.practiceQuestion.findUnique({
+      where: { id: questionId },
+    });
+    if (
+      !question ||
+      question.quizId !== attempt.quizId ||
+      question.module !== activeModule.module
+    ) {
       throw new NotFoundException('Question not found on this attempt');
     }
     if (question.type !== QuestionType.FILE_UPLOAD) {
-      throw new BadRequestException('This question does not accept file uploads');
+      throw new BadRequestException(
+        'This question does not accept file uploads',
+      );
     }
 
     const safeFilename = dto.filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const fileKey = `practice-attempts/${attemptId}/${questionId}/${randomUUID()}-${safeFilename}`;
     const uploadUrl = await this.storage.getUploadUrl(fileKey, dto.contentType);
-    await this.touchLock(attemptId, sessionId);
     return { uploadUrl, fileKey };
   }
 
@@ -554,8 +634,12 @@ export class PracticeAttemptsService {
 
     const question =
       attempt.quiz.mode === PracticeQuizMode.BANK
-        ? await this.prisma.practiceAttemptQuestion.findUnique({ where: { id: questionId } })
-        : await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
+        ? await this.prisma.practiceAttemptQuestion.findUnique({
+            where: { id: questionId },
+          })
+        : await this.prisma.practiceQuestion.findUnique({
+            where: { id: questionId },
+          });
     const belongsToAttempt =
       attempt.quiz.mode === PracticeQuizMode.BANK
         ? (question as { attemptId?: string } | null)?.attemptId === attemptId
@@ -574,7 +658,11 @@ export class PracticeAttemptsService {
     return { viewUrl };
   }
 
-  async getImageUrl(studentMembershipId: string, attemptId: string, questionId: string) {
+  async getImageUrl(
+    studentMembershipId: string,
+    attemptId: string,
+    questionId: string,
+  ) {
     const attempt = await this.prisma.practiceAttempt.findUnique({
       where: { id: attemptId },
       include: { quiz: { select: { mode: true } } },
@@ -585,8 +673,12 @@ export class PracticeAttemptsService {
 
     const question =
       attempt.quiz.mode === PracticeQuizMode.BANK
-        ? await this.prisma.practiceAttemptQuestion.findUnique({ where: { id: questionId } })
-        : await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
+        ? await this.prisma.practiceAttemptQuestion.findUnique({
+            where: { id: questionId },
+          })
+        : await this.prisma.practiceQuestion.findUnique({
+            where: { id: questionId },
+          });
     const belongsToAttempt =
       attempt.quiz.mode === PracticeQuizMode.BANK
         ? (question as { attemptId?: string } | null)?.attemptId === attemptId
@@ -619,14 +711,19 @@ export class PracticeAttemptsService {
       throw new NotFoundException('Attempt not found');
     }
 
-    let option: { imageKey: string | null; imageFilename: string | null } | null;
+    let option: {
+      imageKey: string | null;
+      imageFilename: string | null;
+    } | null;
     if (attempt.quiz.mode === PracticeQuizMode.BANK) {
       const row = await this.prisma.practiceAttemptQuestionOption.findUnique({
         where: { id: optionId },
         include: { attemptQuestion: true },
       });
       option =
-        row && row.attemptQuestionId === questionId && row.attemptQuestion.attemptId === attemptId
+        row &&
+        row.attemptQuestionId === questionId &&
+        row.attemptQuestion.attemptId === attemptId
           ? row
           : null;
     } else {
@@ -635,7 +732,9 @@ export class PracticeAttemptsService {
         include: { question: true },
       });
       option =
-        row && row.questionId === questionId && row.question.quizId === attempt.quizId
+        row &&
+        row.questionId === questionId &&
+        row.question.quizId === attempt.quizId
           ? row
           : null;
     }
@@ -646,7 +745,10 @@ export class PracticeAttemptsService {
       throw new NotFoundException('This option has no image');
     }
 
-    const viewUrl = await this.storage.getViewUrl(option.imageKey, option.imageFilename ?? 'image');
+    const viewUrl = await this.storage.getViewUrl(
+      option.imageKey,
+      option.imageFilename ?? 'image',
+    );
     return { viewUrl };
   }
 
@@ -656,17 +758,21 @@ export class PracticeAttemptsService {
    * student calls beginNextModule — this is also the point where the client
    * shows the inter-module ("take a break" for the R&W->Math boundary,
    * otherwise immediate) screen. */
-  async completeCurrentModule(studentMembershipId: string, attemptId: string, sessionId: string) {
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+  async completeCurrentModule(
+    studentMembershipId: string,
+    attemptId: string,
+    sessionId: string,
+  ) {
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
       throw new NotFoundException('Attempt not found');
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is not in progress');
     }
-    if (this.isLockLiveAndForeign(attempt, sessionId)) {
-      throw new ForbiddenException('This test is currently active in another session');
-    }
+    await this.requireLock(this.prisma.practiceAttempt, attemptId, sessionId);
     await this.enforceModuleDeadline(attemptId);
 
     const active = await this.prisma.practiceAttemptModuleProgress.findFirst({
@@ -684,7 +790,6 @@ export class PracticeAttemptsService {
         await this.finalizeAttempt(attemptId);
       }
     }
-    await this.touchLock(attemptId, sessionId);
 
     return this.buildAttemptView(attemptId, studentMembershipId);
   }
@@ -693,25 +798,34 @@ export class PracticeAttemptsService {
    * the call the break/continue screen triggers. Nothing here distinguishes
    * the R&W->Math boundary from any other; the break is purely a client-side
    * choice of when to make this call. */
-  async beginNextModule(studentMembershipId: string, attemptId: string, sessionId: string) {
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+  async beginNextModule(
+    studentMembershipId: string,
+    attemptId: string,
+    sessionId: string,
+  ) {
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.studentMembershipId !== studentMembershipId) {
       throw new NotFoundException('Attempt not found');
     }
     if (attempt.status !== AttemptStatus.IN_PROGRESS) {
       throw new BadRequestException('Attempt is not in progress');
     }
-    if (this.isLockLiveAndForeign(attempt, sessionId)) {
-      throw new ForbiddenException('This test is currently active in another session');
-    }
+    await this.requireLock(this.prisma.practiceAttempt, attemptId, sessionId);
 
-    const progressRows = await this.prisma.practiceAttemptModuleProgress.findMany({
-      where: { attemptId },
-    });
+    const progressRows =
+      await this.prisma.practiceAttemptModuleProgress.findMany({
+        where: { attemptId },
+      });
     if (progressRows.some((p) => !p.submittedAt)) {
-      throw new BadRequestException('The current module has not been completed yet');
+      throw new BadRequestException(
+        'The current module has not been completed yet',
+      );
     }
-    const completed = new Set(progressRows.map((p) => this.toSatModule(p.module)));
+    const completed = new Set(
+      progressRows.map((p) => this.toSatModule(p.module)),
+    );
     const next = QUIZ_MODULE_SEQUENCE.find((m) => !completed.has(m));
     if (!next) {
       throw new BadRequestException('All modules are already complete');
@@ -720,11 +834,10 @@ export class PracticeAttemptsService {
     await this.prisma.practiceAttemptModuleProgress.create({
       data: {
         attemptId,
-        module: next as unknown as PrismaQuizModule,
+        module: next,
         startedAt: new Date(),
       },
     });
-    await this.touchLock(attemptId, sessionId);
 
     return this.buildAttemptView(attemptId, studentMembershipId);
   }

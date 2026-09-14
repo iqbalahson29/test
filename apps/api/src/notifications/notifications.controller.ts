@@ -21,7 +21,9 @@ type NotificationScope = { membershipId: string } | { userId: string };
 function scopeFor(user: AnyTokenPayload): NotificationScope {
   if (user.type === 'access') return { membershipId: user.membershipId };
   if (user.type === 'superadmin') return { userId: user.sub };
-  throw new ForbiddenException('Notifications are not available for this session');
+  throw new ForbiddenException(
+    'Notifications are not available for this session',
+  );
 }
 
 // AuthGuard('jwt') here, not JwtAuthGuard — a super admin's token is
@@ -42,7 +44,10 @@ export class NotificationsController {
     @Query('limit') limit?: string,
   ) {
     const scope = scopeFor(req.user);
-    const opts = { cursor, limit: limit ? Number.parseInt(limit, 10) : undefined };
+    const opts = {
+      cursor,
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+    };
     return 'membershipId' in scope
       ? this.notifications.list(scope.membershipId, opts)
       : this.notifications.listForUser(scope.userId, opts);
@@ -67,7 +72,10 @@ export class NotificationsController {
   }
 
   @Patch(':id/read')
-  markRead(@Req() req: Request & { user: AnyTokenPayload }, @Param('id') id: string) {
+  markRead(
+    @Req() req: Request & { user: AnyTokenPayload },
+    @Param('id') id: string,
+  ) {
     const scope = scopeFor(req.user);
     return 'membershipId' in scope
       ? this.notifications.markRead(scope.membershipId, id)
@@ -83,7 +91,10 @@ export class NotificationsController {
   }
 
   @Delete(':id')
-  remove(@Req() req: Request & { user: AnyTokenPayload }, @Param('id') id: string) {
+  remove(
+    @Req() req: Request & { user: AnyTokenPayload },
+    @Param('id') id: string,
+  ) {
     const scope = scopeFor(req.user);
     return 'membershipId' in scope
       ? this.notifications.remove(scope.membershipId, id)

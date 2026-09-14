@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, PracticeQuizMode, QuizStatus } from '@prisma/client';
 import { QUIZ_MODULE_SEQUENCE } from '@quiz-platform/shared';
 import { PracticeAuditLogService } from '../practice-audit-log/audit-log.service';
@@ -24,12 +28,17 @@ function resolveBankSettings(
   mode: PracticeQuizMode,
   targets: BankModuleTargets | undefined,
   ratio: BankDifficultyRatio | undefined,
-): { bankModuleTargets: Prisma.InputJsonValue | undefined; bankDifficultyRatio: Prisma.InputJsonValue | undefined } {
+): {
+  bankModuleTargets: Prisma.InputJsonValue | undefined;
+  bankDifficultyRatio: Prisma.InputJsonValue | undefined;
+} {
   if (mode !== PracticeQuizMode.BANK) {
     return { bankModuleTargets: undefined, bankDifficultyRatio: undefined };
   }
   if (!targets) {
-    throw new BadRequestException('bankModuleTargets is required for a question-bank quiz');
+    throw new BadRequestException(
+      'bankModuleTargets is required for a question-bank quiz',
+    );
   }
   const resolvedRatio = ratio ?? DEFAULT_BANK_DIFFICULTY_RATIO;
   const sum = resolvedRatio.EASY + resolvedRatio.MEDIUM + resolvedRatio.HARD;
@@ -43,7 +52,10 @@ function resolveBankSettings(
 
 /** Mirrors PracticeAttemptsService's own lock-liveness check, for the
  * read-only teacher-facing "is this attempt active right now" indicator. */
-function isSessionLive(lockSessionId: string | null, lastHeartbeatAt: Date | null): boolean {
+function isSessionLive(
+  lockSessionId: string | null,
+  lastHeartbeatAt: Date | null,
+): boolean {
   if (!lockSessionId || !lastHeartbeatAt) return false;
   return lastHeartbeatAt.getTime() > Date.now() - SESSION_LOCK_TIMEOUT_MS;
 }
@@ -72,10 +84,13 @@ export class PracticeQuizzesService {
       where: { quizId, status: 'GRADED' },
       select: { score: true, maxScore: true },
     });
-    const percents = graded.map((a) => (Number(a.score) / Number(a.maxScore)) * 100);
+    const percents = graded.map(
+      (a) => (Number(a.score) / Number(a.maxScore)) * 100,
+    );
     return percents.length > 0
-      ? Math.round((percents.reduce((sum, p) => sum + p, 0) / percents.length) * 100) /
-          100
+      ? Math.round(
+          (percents.reduce((sum, p) => sum + p, 0) / percents.length) * 100,
+        ) / 100
       : null;
   }
 
@@ -126,12 +141,16 @@ export class PracticeQuizzesService {
     };
   }
 
-  async create(tenantId: string, createdByMembershipId: string, dto: CreatePracticeQuizDto) {
+  async create(
+    tenantId: string,
+    createdByMembershipId: string,
+    dto: CreatePracticeQuizDto,
+  ) {
     const mode = dto.mode ?? PracticeQuizMode.FIXED;
     const { bankModuleTargets, bankDifficultyRatio } = resolveBankSettings(
       mode,
-      dto.bankModuleTargets as BankModuleTargets | undefined,
-      dto.bankDifficultyRatio as BankDifficultyRatio | undefined,
+      dto.bankModuleTargets,
+      dto.bankDifficultyRatio,
     );
     const quiz = await this.prisma.practiceQuiz.create({
       data: {
@@ -143,15 +162,24 @@ export class PracticeQuizzesService {
         shuffleQuestions: dto.shuffleQuestions ?? false,
         shuffleOptions: dto.shuffleOptions ?? false,
         showDifficultyToStudents: dto.showDifficultyToStudents ?? false,
-        availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
-        availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
+        availableFrom: dto.availableFrom
+          ? new Date(dto.availableFrom)
+          : undefined,
+        availableUntil: dto.availableUntil
+          ? new Date(dto.availableUntil)
+          : undefined,
         passMarkPercent: dto.passMarkPercent,
         mode,
         bankModuleTargets,
         bankDifficultyRatio,
       },
     });
-    await this.auditLog.log(tenantId, quiz.id, createdByMembershipId, 'PRACTICE_QUIZ_CREATED');
+    await this.auditLog.log(
+      tenantId,
+      quiz.id,
+      createdByMembershipId,
+      'PRACTICE_QUIZ_CREATED',
+    );
     return quiz;
   }
 
@@ -171,21 +199,28 @@ export class PracticeQuizzesService {
   ) {
     const quiz = await this.getOwnPracticeQuiz(tenantId, id);
     if (quiz.status !== QuizStatus.DRAFT) {
-      throw new BadRequestException('Only DRAFT practice quizzes can be edited');
+      throw new BadRequestException(
+        'Only DRAFT practice quizzes can be edited',
+      );
     }
-    if ((dto.bankModuleTargets || dto.bankDifficultyRatio) && quiz.mode !== PracticeQuizMode.BANK) {
+    if (
+      (dto.bankModuleTargets || dto.bankDifficultyRatio) &&
+      quiz.mode !== PracticeQuizMode.BANK
+    ) {
       throw new BadRequestException(
         'bankModuleTargets/bankDifficultyRatio only apply to a question-bank quiz',
       );
     }
     let bankModuleTargets: Prisma.InputJsonValue | undefined;
     let bankDifficultyRatio: Prisma.InputJsonValue | undefined;
-    if (quiz.mode === PracticeQuizMode.BANK && (dto.bankModuleTargets || dto.bankDifficultyRatio)) {
+    if (
+      quiz.mode === PracticeQuizMode.BANK &&
+      (dto.bankModuleTargets || dto.bankDifficultyRatio)
+    ) {
       const resolved = resolveBankSettings(
         PracticeQuizMode.BANK,
-        (dto.bankModuleTargets as BankModuleTargets | undefined) ??
-          (quiz.bankModuleTargets as BankModuleTargets),
-        (dto.bankDifficultyRatio as BankDifficultyRatio | undefined) ??
+        dto.bankModuleTargets ?? (quiz.bankModuleTargets as BankModuleTargets),
+        dto.bankDifficultyRatio ??
           (quiz.bankDifficultyRatio as BankDifficultyRatio),
       );
       bankModuleTargets = resolved.bankModuleTargets;
@@ -200,8 +235,12 @@ export class PracticeQuizzesService {
         shuffleQuestions: dto.shuffleQuestions,
         shuffleOptions: dto.shuffleOptions,
         showDifficultyToStudents: dto.showDifficultyToStudents,
-        availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
-        availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
+        availableFrom: dto.availableFrom
+          ? new Date(dto.availableFrom)
+          : undefined,
+        availableUntil: dto.availableUntil
+          ? new Date(dto.availableUntil)
+          : undefined,
         passMarkPercent: dto.passMarkPercent,
         bankModuleTargets,
         bankDifficultyRatio,
@@ -256,8 +295,12 @@ export class PracticeQuizzesService {
           where: { quizId: id },
           _count: { _all: true },
         });
-        const withQuestions = new Set<string>(byModule.map((g) => g.module as string));
-        const emptyModules = QUIZ_MODULE_SEQUENCE.filter((m) => !withQuestions.has(m));
+        const withQuestions = new Set<string>(
+          byModule.map((g) => g.module as string),
+        );
+        const emptyModules = QUIZ_MODULE_SEQUENCE.filter(
+          (m) => !withQuestions.has(m),
+        );
         if (emptyModules.length > 0) {
           throw new BadRequestException(
             `Cannot ${verb} a practice quiz with no questions in: ${emptyModules.join(', ')}`,
@@ -265,12 +308,17 @@ export class PracticeQuizzesService {
         }
       }
     }
-    const updated = await this.prisma.practiceQuiz.update({ where: { id }, data: { status } });
+    const updated = await this.prisma.practiceQuiz.update({
+      where: { id },
+      data: { status },
+    });
     // ARCHIVED -> DRAFT is a restore, not an unpublish (which is
     // PUBLISHED -> DRAFT) — flag it distinctly so the activity feed reads
     // "Restored", not the misleading "Unpublished".
     const auditDetail =
-      quiz.status === QuizStatus.ARCHIVED && status === QuizStatus.DRAFT ? 'RESTORED' : status;
+      quiz.status === QuizStatus.ARCHIVED && status === QuizStatus.DRAFT
+        ? 'RESTORED'
+        : status;
     await this.auditLog.log(
       tenantId,
       id,
@@ -284,7 +332,10 @@ export class PracticeQuizzesService {
   /** Promotes practice quizzes whose scheduled availableFrom time has arrived. Called by PracticeQuizSchedulerService's cron tick. */
   async publishDueScheduledQuizzes() {
     const due = await this.prisma.practiceQuiz.findMany({
-      where: { status: QuizStatus.SCHEDULED, availableFrom: { lte: new Date() } },
+      where: {
+        status: QuizStatus.SCHEDULED,
+        availableFrom: { lte: new Date() },
+      },
       select: { id: true, tenantId: true },
     });
     if (due.length === 0) return 0;
@@ -294,7 +345,13 @@ export class PracticeQuizzesService {
     });
     await Promise.all(
       due.map((q) =>
-        this.auditLog.log(q.tenantId, q.id, null, 'STATUS_CHANGED', 'PUBLISHED'),
+        this.auditLog.log(
+          q.tenantId,
+          q.id,
+          null,
+          'STATUS_CHANGED',
+          'PUBLISHED',
+        ),
       ),
     );
     return due.length;
@@ -380,7 +437,9 @@ export class PracticeQuizzesService {
     await this.getOwnPracticeQuiz(tenantId, id);
     const attempts = await this.prisma.practiceAttempt.findMany({
       where: { quizId: id },
-      include: { student: { include: { user: { select: { name: true, email: true } } } } },
+      include: {
+        student: { include: { user: { select: { name: true, email: true } } } },
+      },
       orderBy: { startedAt: 'desc' },
     });
     return attempts.map((a) => ({
@@ -423,11 +482,12 @@ export class PracticeQuizzesService {
     // stays correct forever even after the admin edits/deletes bank
     // questions later.
     if (quiz.mode === PracticeQuizMode.BANK) {
-      const snapshotQuestions = await this.prisma.practiceAttemptQuestion.findMany({
-        where: { attemptId },
-        orderBy: [{ module: 'asc' }, { order: 'asc' }],
-        include: { options: { orderBy: { order: 'asc' } }, response: true },
-      });
+      const snapshotQuestions =
+        await this.prisma.practiceAttemptQuestion.findMany({
+          where: { attemptId },
+          orderBy: [{ module: 'asc' }, { order: 'asc' }],
+          include: { options: { orderBy: { order: 'asc' } }, response: true },
+        });
       return {
         attemptId: attempt.id,
         studentName: attempt.student.user.name,
@@ -438,7 +498,10 @@ export class PracticeQuizzesService {
         maxScore: attempt.maxScore,
         startedAt: attempt.startedAt,
         submittedAt: attempt.submittedAt,
-        sessionActive: isSessionLive(attempt.lockSessionId, attempt.lastHeartbeatAt),
+        sessionActive: isSessionLive(
+          attempt.lockSessionId,
+          attempt.lastHeartbeatAt,
+        ),
         questions: snapshotQuestions.map((q) => ({
           questionId: q.id,
           module: q.module,
@@ -472,7 +535,9 @@ export class PracticeQuizzesService {
       orderBy: [{ module: 'asc' }, { order: 'asc' }],
       include: { options: { orderBy: { order: 'asc' } } },
     });
-    const responseByQuestion = new Map(attempt.responses.map((r) => [r.questionId, r]));
+    const responseByQuestion = new Map(
+      attempt.responses.map((r) => [r.questionId, r]),
+    );
 
     return {
       attemptId: attempt.id,
@@ -484,7 +549,10 @@ export class PracticeQuizzesService {
       maxScore: attempt.maxScore,
       startedAt: attempt.startedAt,
       submittedAt: attempt.submittedAt,
-      sessionActive: isSessionLive(attempt.lockSessionId, attempt.lastHeartbeatAt),
+      sessionActive: isSessionLive(
+        attempt.lockSessionId,
+        attempt.lastHeartbeatAt,
+      ),
       questions: questions.map((q) => {
         const response = responseByQuestion.get(q.id);
         return {
@@ -525,15 +593,21 @@ export class PracticeQuizzesService {
     questionId: string,
   ) {
     const quiz = await this.getOwnPracticeQuiz(tenantId, quizId);
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.quizId !== quizId) {
       throw new NotFoundException('Attempt not found');
     }
 
     const question =
       quiz.mode === PracticeQuizMode.BANK
-        ? await this.prisma.practiceAttemptQuestion.findUnique({ where: { id: questionId } })
-        : await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
+        ? await this.prisma.practiceAttemptQuestion.findUnique({
+            where: { id: questionId },
+          })
+        : await this.prisma.practiceQuestion.findUnique({
+            where: { id: questionId },
+          });
     const belongsToAttempt =
       quiz.mode === PracticeQuizMode.BANK
         ? (question as { attemptId?: string } | null)?.attemptId === attemptId
@@ -549,7 +623,11 @@ export class PracticeQuizzesService {
       question.attachmentKey,
       question.attachmentFilename ?? 'document',
     );
-    return { viewUrl, filename: question.attachmentFilename, mimeType: question.attachmentMimeType };
+    return {
+      viewUrl,
+      filename: question.attachmentFilename,
+      mimeType: question.attachmentMimeType,
+    };
   }
 
   /** Question-level image view URL for the admin's attempt-detail/grading
@@ -563,15 +641,21 @@ export class PracticeQuizzesService {
     questionId: string,
   ) {
     const quiz = await this.getOwnPracticeQuiz(tenantId, quizId);
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.quizId !== quizId) {
       throw new NotFoundException('Attempt not found');
     }
 
     const question =
       quiz.mode === PracticeQuizMode.BANK
-        ? await this.prisma.practiceAttemptQuestion.findUnique({ where: { id: questionId } })
-        : await this.prisma.practiceQuestion.findUnique({ where: { id: questionId } });
+        ? await this.prisma.practiceAttemptQuestion.findUnique({
+            where: { id: questionId },
+          })
+        : await this.prisma.practiceQuestion.findUnique({
+            where: { id: questionId },
+          });
     const belongsToAttempt =
       quiz.mode === PracticeQuizMode.BANK
         ? (question as { attemptId?: string } | null)?.attemptId === attemptId
@@ -587,7 +671,11 @@ export class PracticeQuizzesService {
       question.imageKey,
       question.imageFilename ?? 'image',
     );
-    return { viewUrl, filename: question.imageFilename, mimeType: question.imageMimeType };
+    return {
+      viewUrl,
+      filename: question.imageFilename,
+      mimeType: question.imageMimeType,
+    };
   }
 
   /** Option-level counterpart of getAttemptQuestionImageUrl. */
@@ -599,19 +687,27 @@ export class PracticeQuizzesService {
     optionId: string,
   ) {
     const quiz = await this.getOwnPracticeQuiz(tenantId, quizId);
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.quizId !== quizId) {
       throw new NotFoundException('Attempt not found');
     }
 
-    let option: { imageKey: string | null; imageFilename: string | null; imageMimeType: string | null } | null;
+    let option: {
+      imageKey: string | null;
+      imageFilename: string | null;
+      imageMimeType: string | null;
+    } | null;
     if (quiz.mode === PracticeQuizMode.BANK) {
       const row = await this.prisma.practiceAttemptQuestionOption.findUnique({
         where: { id: optionId },
         include: { attemptQuestion: true },
       });
       option =
-        row && row.attemptQuestionId === questionId && row.attemptQuestion.attemptId === attemptId
+        row &&
+        row.attemptQuestionId === questionId &&
+        row.attemptQuestion.attemptId === attemptId
           ? row
           : null;
     } else {
@@ -619,7 +715,10 @@ export class PracticeQuizzesService {
         where: { id: optionId },
         include: { question: true },
       });
-      option = row && row.questionId === questionId && row.question.quizId === quizId ? row : null;
+      option =
+        row && row.questionId === questionId && row.question.quizId === quizId
+          ? row
+          : null;
     }
     if (!option) {
       throw new NotFoundException('Option not found on this attempt');
@@ -628,8 +727,15 @@ export class PracticeQuizzesService {
       throw new NotFoundException('This option has no image');
     }
 
-    const viewUrl = await this.storage.getViewUrl(option.imageKey, option.imageFilename ?? 'image');
-    return { viewUrl, filename: option.imageFilename, mimeType: option.imageMimeType };
+    const viewUrl = await this.storage.getViewUrl(
+      option.imageKey,
+      option.imageFilename ?? 'image',
+    );
+    return {
+      viewUrl,
+      filename: option.imageFilename,
+      mimeType: option.imageMimeType,
+    };
   }
 
   /** Manual escape hatch for a stuck session lock — e.g. a student's device
@@ -644,7 +750,9 @@ export class PracticeQuizzesService {
     actorMembershipId: string,
   ) {
     await this.getOwnPracticeQuiz(tenantId, quizId);
-    const attempt = await this.prisma.practiceAttempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.practiceAttempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.quizId !== quizId) {
       throw new NotFoundException('Attempt not found');
     }

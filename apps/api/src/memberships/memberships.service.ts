@@ -5,7 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
+import { IdentifierService } from '../auth/identifier.service';
+import { PasswordService } from '../auth/password.service';
+import { SessionService } from '../auth/session.service';
+import { SecurityEventsService } from '../auth/security/security-events.service';
+import {
+  serial,
+  mailboxLock,
+  authError,
+  Tx,
+} from '../auth/security/primitives';
+import type { AccessTokenPayload } from '../auth/token.types';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMembershipDto } from './dto/create-membership.dto';
@@ -15,6 +25,10 @@ export class MembershipsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly identifiers: IdentifierService,
+    private readonly passwords: PasswordService,
+    private readonly sessions: SessionService,
+    private readonly events: SecurityEventsService,
   ) {}
 
   async list(tenantId: string) {
@@ -93,42 +107,70 @@ export class MembershipsService {
       role: membership.role,
       joinedAt: membership.createdAt,
       user: membership.user,
-      groups: groupMemberships.map((gm) => ({ id: gm.group.id, name: gm.group.name })),
+      groups: groupMemberships.map((gm) => ({
+        id: gm.group.id,
+        name: gm.group.name,
+      })),
     };
   }
 
-  async create(tenantId: string, dto: CreateMembershipDto, actorMembershipId: string | null) {
-    let user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
-      include: { memberships: true },
-    });
-
-    if (!user) {
-      if (!dto.name || !dto.password) {
-        throw new BadRequestException(
-          'name and password are required to create a new user',
-        );
-      }
-      const passwordHash = await bcrypt.hash(dto.password, 10);
-      user = await this.prisma.user.create({
-        data: { email: dto.email, name: dto.name, passwordHash },
-        include: { memberships: true },
+  async create(
+    tenantId: string,
+    dto: CreateMembershipDto,
+    actor: AccessTokenPayload,
+  ) {
+    const email = this.identifiers.normalize(dto.email),
+      hash = dto.password ? await this.passwords.hash(dto.password) : null;
+    return serial(this.prisma, async (tx) => {
+      await mailboxLock(tx, email.normalized);
+      await this.sessions.live(tx, actor);
+      if (actor.tenantId !== tenantId || actor.role !== 'ADMIN')
+        throw authError('FORBIDDEN', 403);
+      let user = await tx.user.findUnique({
+        where: { emailNormalized: email.normalized },
       });
-    }
-
-    // A user can belong to at most one membership per tenant, but may
-    // already be a member of other tenants — that's fine now.
-    const alreadyInTenant = user.memberships.some((m) => m.tenantId === tenantId);
-    if (alreadyInTenant) {
-      throw new ConflictException('This user already belongs to this workspace');
-    }
-
-    const membership = await this.prisma.membership.create({
-      data: { userId: user.id, tenantId, role: dto.role },
-      include: { user: { select: { id: true, email: true, name: true } } },
+      if (!user) {
+        if (!hash || !dto.name) throw authError('VALIDATION_ERROR');
+        user = await tx.user.create({
+          data: {
+            email: email.raw,
+            emailNormalized: email.normalized,
+            name: dto.name,
+            passwordHash: hash,
+            emailVerifiedAt: null,
+          },
+        });
+        await tx.authIdentity.create({
+          data: {
+            userId: user.id,
+            provider: 'PASSWORD',
+            providerUserId: user.id,
+          },
+        });
+      }
+      if (
+        await tx.membership.findUnique({
+          where: { userId_tenantId: { userId: user.id, tenantId } },
+        })
+      )
+        throw authError('MEMBERSHIP_EXISTS', 409);
+      const membership = await tx.membership.create({
+        data: { userId: user.id, tenantId, role: dto.role },
+        include: { user: { select: { id: true, email: true, name: true } } },
+      });
+      await this.events.record(
+        tx,
+        'MEMBERSHIP_CREATED',
+        actor.sub,
+        actor.sessionId,
+        { targetUserId: user.id, tenantId },
+      );
+      return {
+        id: membership.id,
+        role: membership.role,
+        user: membership.user,
+      };
     });
-    await this.auditLog.log(tenantId, null, actorMembershipId, 'MEMBER_ADDED', user.name);
-    return { id: membership.id, role: membership.role, user: membership.user };
   }
 
   /**
@@ -139,7 +181,7 @@ export class MembershipsService {
    */
   async findOrCreateStudentMembershipByEmail(tenantId: string, email: string) {
     const user = await this.prisma.user.findUnique({
-      where: { email },
+      where: { emailNormalized: this.identifiers.normalize(email).normalized },
       include: { memberships: true },
     });
     if (!user) {
@@ -163,77 +205,85 @@ export class MembershipsService {
     });
   }
 
-  async remove(tenantId: string, membershipId: string, actorMembershipId: string | null) {
-    const membership = await this.prisma.membership.findUnique({
-      where: { id: membershipId },
-      include: { user: { select: { name: true } } },
+  async remove(
+    tenantId: string,
+    membershipId: string,
+    actor: AccessTokenPayload,
+  ) {
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.tenantId !== tenantId || actor.role !== 'ADMIN')
+        throw authError('FORBIDDEN', 403);
+      const membership = await tx.membership.findFirst({
+        where: { id: membershipId, tenantId },
+        include: { user: true },
+      });
+      if (!membership) throw authError('NOT_FOUND', 404);
+      if (membership.role === 'ADMIN')
+        await this.assertNotLastAdmin(tx, tenantId);
+      const sessions = await tx.session.findMany({
+        where: { membershipId, revokedAt: null },
+        select: { id: true },
+      });
+      for (const session of sessions)
+        await this.sessions.revoke(tx, session.id, 'membership-removed');
+      await tx.membership.delete({ where: { id: membershipId } });
+      await this.events.record(
+        tx,
+        'MEMBERSHIP_REMOVED',
+        actor.sub,
+        actor.sessionId,
+        { membershipId, tenantId },
+      );
+      return { id: membershipId };
     });
-    if (!membership || membership.tenantId !== tenantId) {
-      throw new NotFoundException('Membership not found');
-    }
-
-    if (membership.role === Role.ADMIN) {
-      await this.assertNotLastAdmin(tenantId);
-    }
-
-    await this.prisma.membership.delete({ where: { id: membershipId } });
-    await this.auditLog.log(
-      tenantId,
-      null,
-      actorMembershipId,
-      'MEMBER_REMOVED',
-      membership.user.name,
-    );
-    return { id: membershipId };
   }
-
   async updateRole(
     tenantId: string,
     membershipId: string,
     role: Role,
-    actorMembershipId: string | null,
+    actor: AccessTokenPayload,
   ) {
-    const membership = await this.prisma.membership.findUnique({
-      where: { id: membershipId },
-      include: { user: { select: { name: true } } },
+    return serial(this.prisma, async (tx) => {
+      await this.sessions.live(tx, actor);
+      if (actor.tenantId !== tenantId || actor.role !== 'ADMIN')
+        throw authError('FORBIDDEN', 403);
+      const membership = await tx.membership.findFirst({
+        where: { id: membershipId, tenantId },
+      });
+      if (!membership) throw authError('NOT_FOUND', 404);
+      if (membership.role === 'ADMIN' && role !== 'ADMIN')
+        await this.assertNotLastAdmin(tx, tenantId);
+      if (membership.role !== role) {
+        const sessions = await tx.session.findMany({
+          where: { membershipId, revokedAt: null },
+          select: { id: true },
+        });
+        for (const session of sessions)
+          await this.sessions.revoke(tx, session.id, 'role-changed');
+      }
+      const updated = await tx.membership.update({
+        where: { id: membershipId },
+        data: { role },
+        include: { user: { select: { id: true, email: true, name: true } } },
+      });
+      await this.events.record(
+        tx,
+        'MEMBERSHIP_ROLE_CHANGED',
+        actor.sub,
+        actor.sessionId,
+        { membershipId, tenantId },
+      );
+      return { id: updated.id, role: updated.role, user: updated.user };
     });
-    if (!membership || membership.tenantId !== tenantId) {
-      throw new NotFoundException('Membership not found');
-    }
-
-    if (membership.role === Role.ADMIN && role !== Role.ADMIN) {
-      await this.assertNotLastAdmin(tenantId);
-    }
-
-    if (membership.role === role) {
-      return { id: membership.id, role: membership.role, user: membership.user };
-    }
-
-    const updated = await this.prisma.membership.update({
-      where: { id: membershipId },
-      data: { role },
-      include: { user: { select: { id: true, email: true, name: true } } },
-    });
-    await this.auditLog.log(
-      tenantId,
-      null,
-      actorMembershipId,
-      'MEMBER_ROLE_CHANGED',
-      updated.user.name,
-    );
-    return { id: updated.id, role: updated.role, user: updated.user };
   }
-
-  private async assertNotLastAdmin(tenantId: string) {
-    // Excludes a super admin's own (hidden) membership — otherwise a tenant
-    // whose only *visible* admin tries to step down would sail past this
-    // check because the invisible super admin membership is still counted,
-    // leaving the workspace with zero admins its own members can see.
-    const adminCount = await this.prisma.membership.count({
-      where: { tenantId, role: Role.ADMIN, user: { isSuperAdmin: false } },
-    });
-    if (adminCount <= 1) {
+  private async assertNotLastAdmin(tx: Tx, tenantId: string) {
+    await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${'tenant-admin:' + tenantId},0))`;
+    if (
+      (await tx.membership.count({
+        where: { tenantId, role: 'ADMIN', user: { isSuperAdmin: false } },
+      })) <= 1
+    )
       throw new BadRequestException("Cannot remove this tenant's last admin");
-    }
   }
 }

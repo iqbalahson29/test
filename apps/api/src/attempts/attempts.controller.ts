@@ -27,7 +27,12 @@ export class AttemptsController {
 
   @Post()
   start(@CurrentUser() user: AccessTokenPayload, @Body() dto: StartAttemptDto) {
-    return this.attempts.start(user.tenantId, user.membershipId, dto.quizId, user.sessionId);
+    return this.attempts.start(
+      user.tenantId,
+      user.membershipId,
+      dto.quizId,
+      user.sessionId,
+    );
   }
 
   @Get()
@@ -50,7 +55,13 @@ export class AttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: SaveResponseDto,
   ) {
-    return this.attempts.saveResponse(user.membershipId, id, questionId, dto, user.sessionId);
+    return this.attempts.saveResponse(
+      user.membershipId,
+      id,
+      questionId,
+      dto,
+      user.sessionId,
+    );
   }
 
   @Post(':id/heartbeat')
@@ -83,7 +94,12 @@ export class AttemptsController {
     @Param('questionId') questionId: string,
     @Param('optionId') optionId: string,
   ) {
-    return this.attempts.getOptionImageUrl(user.membershipId, id, questionId, optionId);
+    return this.attempts.getOptionImageUrl(
+      user.membershipId,
+      id,
+      questionId,
+      optionId,
+    );
   }
 
   @Post(':id/responses/:questionId/upload-url')
@@ -93,16 +109,32 @@ export class AttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: RequestUploadUrlDto,
   ) {
-    return this.attempts.getUploadUrl(user.membershipId, id, questionId, dto, user.sessionId);
+    return this.attempts.getUploadUrl(
+      user.membershipId,
+      id,
+      questionId,
+      dto,
+      user.sessionId,
+    );
   }
 
   @Post(':id/modules/complete')
-  completeCurrentModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
-    return this.attempts.completeCurrentModule(user.membershipId, id, user.sessionId);
+  completeCurrentModule(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
+    return this.attempts.completeCurrentModule(
+      user.membershipId,
+      id,
+      user.sessionId,
+    );
   }
 
   @Post(':id/modules/begin-next')
-  beginNextModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+  beginNextModule(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
     return this.attempts.beginNextModule(user.membershipId, id, user.sessionId);
   }
 }

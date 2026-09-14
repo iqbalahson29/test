@@ -39,8 +39,14 @@ export class StorageService implements OnModuleInit {
       this.logger.log(`Created bucket "${this.bucket}"`);
     } catch (err) {
       const name = (err as { name?: string }).name;
-      if (name !== 'BucketAlreadyOwnedByYou' && name !== 'BucketAlreadyExists') {
-        this.logger.error('Failed to create/verify storage bucket', err as Error);
+      if (
+        name !== 'BucketAlreadyOwnedByYou' &&
+        name !== 'BucketAlreadyExists'
+      ) {
+        this.logger.error(
+          'Failed to create/verify storage bucket',
+          err as Error,
+        );
       }
     }
   }
@@ -51,12 +57,20 @@ export class StorageService implements OnModuleInit {
       Key: key,
       ContentType: contentType,
     });
-    return getSignedUrl(this.s3, command, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
+    return getSignedUrl(this.s3, command, {
+      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+    });
   }
 
   async getDownloadUrl(key: string): Promise<string> {
-    const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
-    return getSignedUrl(this.s3, command, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ResponseContentDisposition: 'attachment',
+    });
+    return getSignedUrl(this.s3, command, {
+      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+    });
   }
 
   /**
@@ -69,8 +83,10 @@ export class StorageService implements OnModuleInit {
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
-      ResponseContentDisposition: `inline; filename="${filename.replace(/"/g, '')}"`,
+      ResponseContentDisposition: `attachment; filename="${filename.replace(/["\r\n]/g, '')}"`,
     });
-    return getSignedUrl(this.s3, command, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
+    return getSignedUrl(this.s3, command, {
+      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+    });
   }
 }

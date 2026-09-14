@@ -1,4 +1,9 @@
-import { ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ExecutionContext,
+  HttpException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AccessTokenPayload, AnyTokenPayload } from './token.types';
 
@@ -18,6 +23,13 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
   ): TUser {
     void info;
     void context;
+    // A failure raised *inside* session validation is not an authentication failure.
+    // SessionService.validateAccess already classifies database faults as 503; collapsing
+    // every `err` into 401 here turned an outage into "your session is invalid", which made
+    // clients drop a good session and retry a refresh instead of reconnecting.
+    if (err instanceof HttpException && err.getStatus() !== 401) {
+      throw err;
+    }
     if (err || !user) {
       throw new UnauthorizedException();
     }

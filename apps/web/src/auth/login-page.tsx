@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { BarChart3, ClipboardCheck, Users } from 'lucide-react'
+import { LoginVerification } from './login-verification'
+import { GoogleButton } from './google-button'
 import { ApiError } from '../lib/api-client'
 import { useAuth } from './auth-context'
 import { AuthLayout } from './auth-layout'
@@ -27,7 +29,7 @@ interface FieldErrors {
 }
 
 export function LoginPage() {
-  const { login, status } = useAuth()
+  const { login, status, googleLogin } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [email, setEmail] = useState(searchParams.get('email') ?? '')
@@ -35,6 +37,7 @@ export function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  useEffect(()=>{if(['authenticated','superadmin','no-workspace'].includes(status))navigate(consumePostAuthRedirect()??'/',{replace:true});else if(status==='workspace-request-pending')navigate('/workspace-pending',{replace:true})},[status,navigate])
 
   const validate = (): boolean => {
     const errors: FieldErrors = {
@@ -52,9 +55,10 @@ export function LoginPage() {
     setSubmitting(true)
     try {
       const result = await login(email, password)
+      setPassword('')
       // 'choosing-workspace' stays on this page — the branch below renders
       // the picker instead of navigating away.
-      if (result !== 'choosing-workspace') {
+      if (result !== 'choosing-workspace' && result !== 'otp-required') {
         navigate(consumePostAuthRedirect() ?? '/', { replace: true })
       }
     } catch (err) {
@@ -75,7 +79,7 @@ export function LoginPage() {
       subtitle="Sign in to build quizzes, grade attempts, and see how your class is doing at a glance."
       features={features}
     >
-      {status === 'choosing-workspace' ? (
+      {status === 'otp-required' ? <LoginVerification /> : status === 'choosing-workspace' ? (
         <ChooseWorkspaceStep />
       ) : (
         <Card>
@@ -86,6 +90,7 @@ export function LoginPage() {
             </p>
           </CardHeader>
           <CardContent>
+            <GoogleButton onCredential={googleLogin} />
             <form onSubmit={onSubmit} noValidate className="space-y-4">
               {error && (
                 <Alert variant="destructive">

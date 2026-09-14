@@ -1,41 +1,28 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import {
+  request,
+  makeApp,
+  fixtureLogin,
+  fixtureTenantAdmin,
+  list,
+  str,
+} from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
 import { fillRemainingPracticeModules } from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string, password = 'password123') {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
 // Requests + approves a brand-new one-tenant workspace via the platform
 // super admin, to get an admin token scoped to a *different* tenant than
 // acme-school — used to exercise tenant isolation.
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
-  const superadmin = await login(app, 'superadmin@quiz-platform.test');
-  const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
-  const password = 'Password123';
-  const reqRes = await request(app.getHttpServer())
-    .post('/tenant-requests')
-    .send({
-      workspaceName: `Beta ${label} ${Date.now()}`,
-      requesterName: 'Beta Admin',
-      requesterEmail: email,
-      password,
-    })
-    .expect(201);
-  await request(app.getHttpServer())
-    .post(`/tenant-requests/${reqRes.body.id}/approve`)
-    .set('Authorization', `Bearer ${superadmin.accessToken}`)
-    .expect(201);
-  const adminLogin = await login(app, email, password);
-  return { token: adminLogin.accessToken as string, email };
+  return fixtureTenantAdmin(app, label);
 }
 
 const VALID_QUESTIONS: Array<{
@@ -140,14 +127,7 @@ describe('Practice quiz builder (e2e)', () => {
   let betaAdminToken: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -175,7 +155,7 @@ describe('Practice quiz builder (e2e)', () => {
         .send(q)
         .expect(201);
       expect(res.body.type).toBe(q.type);
-      createdIds.push(res.body.id);
+      createdIds.push(str(res.body.id));
     }
 
     // Reorder: reverse the list (all 9 questions live in RW_MODULE_1, so
@@ -191,12 +171,14 @@ describe('Practice quiz builder (e2e)', () => {
       .get(`/practice-quizzes/${quizId}`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    const rwModule1Ids = detail.body.questions
+    const rwModule1Ids = list(detail.body.questions)
       .filter((q: { module: string }) => q.module === 'RW_MODULE_1')
       .map((q: { id: string }) => q.id);
     expect(rwModule1Ids).toEqual(reversed);
 
-    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, ['RW_MODULE_1']);
+    await fillRemainingPracticeModules(app, acmeAdminToken, quizId, [
+      'RW_MODULE_1',
+    ]);
 
     await request(app.getHttpServer())
       .patch(`/practice-quizzes/${quizId}/status`)
@@ -226,7 +208,13 @@ describe('Practice quiz builder (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'NUMERIC', module: 'RW_MODULE_1', prompt: 'Bad numeric', points: 1, config: {} })
+      .send({
+        type: 'NUMERIC',
+        module: 'RW_MODULE_1',
+        prompt: 'Bad numeric',
+        points: 1,
+        config: {},
+      })
       .expect(400);
 
     await request(app.getHttpServer())
@@ -280,12 +268,14 @@ describe('Practice quiz builder (e2e)', () => {
       .send(VALID_QUESTIONS[0])
       .expect(404);
 
-    const list = await request(app.getHttpServer())
+    const listRes = await request(app.getHttpServer())
       .get('/practice-quizzes')
       .set('Authorization', `Bearer ${betaAdminToken}`)
       .expect(200);
     expect(
-      (list.body as { title: string }[]).some((q) => q.title === 'Acme Only Practice Quiz'),
+      list<{ title: string }>(listRes.body).some(
+        (q) => q.title === 'Acme Only Practice Quiz',
+      ),
     ).toBe(false);
   });
 });

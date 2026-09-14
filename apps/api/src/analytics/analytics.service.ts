@@ -15,7 +15,9 @@ function median(arr: number[]): number | null {
   if (arr.length === 0) return null;
   const sorted = [...arr].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 @Injectable()
@@ -25,13 +27,17 @@ export class AnalyticsService {
   async quizAnalytics(tenantId: string, quizId: string) {
     const quiz = await this.prisma.quiz.findUnique({
       where: { id: quizId },
-      include: { questions: { orderBy: [{ module: 'asc' }, { order: 'asc' }] } },
+      include: {
+        questions: { orderBy: [{ module: 'asc' }, { order: 'asc' }] },
+      },
     });
     if (!quiz || quiz.tenantId !== tenantId) {
       throw new NotFoundException('Quiz not found');
     }
 
-    const totalAttempts = await this.prisma.attempt.count({ where: { quizId } });
+    const totalAttempts = await this.prisma.attempt.count({
+      where: { quizId },
+    });
     const gradedAttempts = await this.prisma.attempt.findMany({
       where: { quizId, status: AttemptStatus.GRADED },
     });
@@ -61,7 +67,10 @@ export class AnalyticsService {
         : null;
 
     const responses = await this.prisma.response.findMany({
-      where: { question: { quizId }, attempt: { status: AttemptStatus.GRADED } },
+      where: {
+        question: { quizId },
+        attempt: { status: AttemptStatus.GRADED },
+      },
     });
     const byQuestion = new Map(
       quiz.questions.map((q) => [
@@ -88,7 +97,9 @@ export class AnalyticsService {
         difficulty: q.difficulty,
         module: q.module,
         percentCorrect:
-          entry.count > 0 ? round2((entry.fullCredit / entry.count) * 100) : null,
+          entry.count > 0
+            ? round2((entry.fullCredit / entry.count) * 100)
+            : null,
         averagePercent:
           entry.count > 0 && entry.points > 0
             ? round2((entry.totalAwarded / entry.count / entry.points) * 100)
@@ -96,21 +107,23 @@ export class AnalyticsService {
       };
     });
 
-    const byDifficulty = (['EASY', 'MEDIUM', 'HARD'] as const).map((difficulty) => {
-      const inLevel = perQuestion.filter((q) => q.difficulty === difficulty);
-      const withAverage = inLevel.filter((q) => q.averagePercent !== null);
-      return {
-        difficulty,
-        questionCount: inLevel.length,
-        averagePercent:
-          withAverage.length > 0
-            ? round2(
-                withAverage.reduce((sum, q) => sum + q.averagePercent!, 0) /
-                  withAverage.length,
-              )
-            : null,
-      };
-    });
+    const byDifficulty = (['EASY', 'MEDIUM', 'HARD'] as const).map(
+      (difficulty) => {
+        const inLevel = perQuestion.filter((q) => q.difficulty === difficulty);
+        const withAverage = inLevel.filter((q) => q.averagePercent !== null);
+        return {
+          difficulty,
+          questionCount: inLevel.length,
+          averagePercent:
+            withAverage.length > 0
+              ? round2(
+                  withAverage.reduce((sum, q) => sum + q.averagePercent!, 0) /
+                    withAverage.length,
+                )
+              : null,
+        };
+      },
+    );
 
     const byModule = QUIZ_MODULE_SEQUENCE.map((module) => {
       const inModule = perQuestion.filter((q) => q.module === module);
@@ -158,7 +171,9 @@ export class AnalyticsService {
       orderBy: { submittedAt: 'asc' },
     });
 
-    const gradedAttempts = attempts.filter((a) => a.status === AttemptStatus.GRADED);
+    const gradedAttempts = attempts.filter(
+      (a) => a.status === AttemptStatus.GRADED,
+    );
     const percents = gradedAttempts.map(
       (a) => (Number(a.score) / Number(a.maxScore)) * 100,
     );

@@ -35,7 +35,10 @@ export class PracticeQuizzesController {
   }
 
   @Post()
-  create(@CurrentUser() user: AccessTokenPayload, @Body() dto: CreatePracticeQuizDto) {
+  create(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() dto: CreatePracticeQuizDto,
+  ) {
     return this.practiceQuizzes.create(user.tenantId, user.membershipId, dto);
   }
 
@@ -50,7 +53,12 @@ export class PracticeQuizzesController {
     @Param('id') id: string,
     @Body() dto: UpdatePracticeQuizDto,
   ) {
-    return this.practiceQuizzes.update(user.tenantId, id, dto, user.membershipId);
+    return this.practiceQuizzes.update(
+      user.tenantId,
+      id,
+      dto,
+      user.membershipId,
+    );
   }
 
   @Patch(':id/status')
@@ -59,7 +67,12 @@ export class PracticeQuizzesController {
     @Param('id') id: string,
     @Body() dto: UpdatePracticeQuizStatusDto,
   ) {
-    return this.practiceQuizzes.updateStatus(user.tenantId, id, dto.status, user.membershipId);
+    return this.practiceQuizzes.updateStatus(
+      user.tenantId,
+      id,
+      dto.status,
+      user.membershipId,
+    );
   }
 
   @Post(':id/duplicate')
@@ -108,10 +121,17 @@ export class PracticeQuizzesController {
     @Param('attemptId') attemptId: string,
     @Param('questionId') questionId: string,
   ) {
-    return this.practiceQuizzes.getAttemptQuestionImageUrl(user.tenantId, id, attemptId, questionId);
+    return this.practiceQuizzes.getAttemptQuestionImageUrl(
+      user.tenantId,
+      id,
+      attemptId,
+      questionId,
+    );
   }
 
-  @Get(':id/results/:attemptId/questions/:questionId/options/:optionId/image-url')
+  @Get(
+    ':id/results/:attemptId/questions/:questionId/options/:optionId/image-url',
+  )
   getAttemptOptionImageUrl(
     @CurrentUser() user: AccessTokenPayload,
     @Param('id') id: string,

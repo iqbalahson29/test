@@ -1,0 +1,2 @@
+import { Link } from 'react-router-dom'
+export function SessionExpiredPage(){return <main className="min-h-screen grid place-items-center bg-muted/30"><div className="max-w-md space-y-4 rounded-xl border bg-background p-8"><h1 className="text-xl font-semibold">Your session has ended</h1><p className="text-sm text-muted-foreground">Sign in again to continue. Unsaved changes may need to be entered again.</p><Link to="/login" className="inline-block rounded-md bg-primary text-primary-foreground px-4 py-2">Sign in</Link></div></main>}

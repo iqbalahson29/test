@@ -1,75 +1,19 @@
-import { PrismaClient, Role, TenantRequestStatus } from '@prisma/client';
+import { PrismaClient,Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-
-const prisma = new PrismaClient();
-
-async function main() {
-  const passwordHash = await bcrypt.hash('password123', 10);
-
-  await prisma.user.upsert({
-    where: { email: 'superadmin@quiz-platform.test' },
-    update: {},
-    create: {
-      email: 'superadmin@quiz-platform.test',
-      name: 'Sam Superadmin',
-      passwordHash,
-      isSuperAdmin: true,
-    },
+import { normalizeIdentifier } from '@quiz-platform/shared';
+const prisma=new PrismaClient();
+async function main(){
+  if(process.env.NODE_ENV==='production'||process.env.AUTH_RELEASE_STAGE&&process.env.AUTH_RELEASE_STAGE!=='local')throw new Error('Demo seeding is forbidden in hosted environments. Use auth:bootstrap on a clean target.');
+  const hash=await bcrypt.hash('Password123',10);
+  await prisma.$transaction(async tx=>{
+    const acme=await tx.tenant.upsert({where:{slug:'acme-school'},create:{name:'Acme School',slug:'acme-school'},update:{}});
+    for(const [email,name,role] of [['superadmin@quiz-platform.test','Sam Superadmin',null],['admin@acme.test','Ada Admin',Role.ADMIN],['student@acme.test','Sam Student',Role.STUDENT]] as const){
+      const normalized=normalizeIdentifier(email).normalized;
+      let user=await tx.user.findUnique({where:{emailNormalized:normalized}});
+      if(!user){user=await tx.user.create({data:{email,emailNormalized:normalized,name,passwordHash:hash,isSuperAdmin:role===null,emailVerifiedAt:null}});await tx.authIdentity.create({data:{userId:user.id,provider:'PASSWORD',providerUserId:user.id}});}
+      if(role)await tx.membership.upsert({where:{userId_tenantId:{userId:user.id,tenantId:acme.id}},create:{userId:user.id,tenantId:acme.id,role},update:{}});
+    }
   });
-
-  const acme = await prisma.tenant.upsert({
-    where: { slug: 'acme-school' },
-    update: {},
-    create: { name: 'Acme School', slug: 'acme-school' },
-  });
-
-  const seedMembership = async (email: string, name: string, role: Role) => {
-    const user = await prisma.user.upsert({
-      where: { email },
-      update: {},
-      create: { email, name, passwordHash },
-    });
-
-    await prisma.membership.upsert({
-      where: { userId_tenantId: { userId: user.id, tenantId: acme.id } },
-      update: { role },
-      create: { userId: user.id, tenantId: acme.id, role },
-    });
-
-    return user;
-  };
-
-  await seedMembership('admin@acme.test', 'Ada Admin', Role.ADMIN);
-  await seedMembership('student@acme.test', 'Sam Student', Role.STUDENT);
-
-  await prisma.tenantRequest.upsert({
-    where: { slug: 'beta-academy' },
-    update: {},
-    create: {
-      workspaceName: 'Beta Academy',
-      slug: 'beta-academy',
-      requesterName: 'Terry Teacher',
-      requesterEmail: 'teacher@beta.test',
-      passwordHash,
-      status: TenantRequestStatus.PENDING,
-    },
-  });
-
-  console.log('Seed complete. Tenant:', acme.slug);
-  console.log('Login with password "password123" as:');
-  console.log('  superadmin@quiz-platform.test -> platform Super Admin');
-  console.log('  admin@acme.test               -> ADMIN in acme-school');
-  console.log('  student@acme.test             -> STUDENT in acme-school');
-  console.log(
-    '  A pending "Beta Academy" workspace request is waiting for the super admin to approve.',
-  );
+  console.log('Local demo accounts created. Password: Password123. Email OTP is required; use the local console mail driver.');
 }
-
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+void main().catch(()=>{console.error('Demo seed refused or failed. Verify local configuration and database.');process.exitCode=1;}).finally(()=>prisma.$disconnect());

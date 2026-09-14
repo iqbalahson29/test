@@ -17,9 +17,13 @@ export class AuditLogController {
   // "View all" dialog (?limit=50) — both read tenant-wide events, not just
   // quiz-scoped ones.
   @Get('recent')
-  recent(@CurrentUser() user: AccessTokenPayload, @Query('limit') limit?: string) {
+  recent(
+    @CurrentUser() user: AccessTokenPayload,
+    @Query('limit') limit?: string,
+  ) {
     const parsed = limit ? Number.parseInt(limit, 10) : NaN;
-    const take = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : undefined;
+    const take =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : undefined;
     return this.auditLog.listForTenant(user.tenantId, take);
   }
 }

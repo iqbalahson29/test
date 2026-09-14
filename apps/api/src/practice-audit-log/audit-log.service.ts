@@ -59,7 +59,9 @@ export class PracticeAuditLogService {
       case 'ASSIGNMENT_CREATED':
         return detail ? `Assigned to ${detail}` : 'Assigned to a student';
       case 'ASSIGNMENT_REMOVED':
-        return detail ? `Removed assignment for ${detail}` : 'Removed an assignment';
+        return detail
+          ? `Removed assignment for ${detail}`
+          : 'Removed an assignment';
       case 'QUESTION_REGRADED': {
         const base = 'Regraded a question';
         const withDetail = detail ? `${base} — ${detail}` : base;
@@ -73,7 +75,9 @@ export class PracticeAuditLogService {
       case 'RESPONSE_GRADED':
         return detail ? `Graded ${detail}'s response` : 'Graded a response';
       case 'SESSION_RELEASED':
-        return actorName ? `${detail} (by ${actorName})` : (detail ?? 'Released a test session');
+        return actorName
+          ? `${detail} (by ${actorName})`
+          : (detail ?? 'Released a test session');
       default:
         return action;
     }
@@ -89,7 +93,11 @@ export class PracticeAuditLogService {
     return entries.map((e) => ({
       id: e.id,
       action: e.action,
-      message: this.buildMessage(e.action, e.detail, e.actor?.user.name ?? null),
+      message: this.buildMessage(
+        e.action,
+        e.detail,
+        e.actor?.user.name ?? null,
+      ),
       createdAt: e.createdAt,
     }));
   }
@@ -104,7 +112,11 @@ export class PracticeAuditLogService {
     return entries.map((e) => ({
       id: e.id,
       action: e.action,
-      message: this.buildMessage(e.action, e.detail, e.actor?.user.name ?? null),
+      message: this.buildMessage(
+        e.action,
+        e.detail,
+        e.actor?.user.name ?? null,
+      ),
       createdAt: e.createdAt,
     }));
   }

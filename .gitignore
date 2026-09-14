@@ -2,9 +2,23 @@ node_modules/
 dist/
 build/
 .env
-.env.local
+# Any env variant -- backups, per-stage files, generated local configs -- stays out of git.
+# Only the sanitized *.example templates are tracked.
+.env.*
+!.env.example
+!*.env.example
+**/.env
+**/.env.*
+!**/.env.example
 *.log
 .DS_Store
 coverage/
 .turbo/
+# Playwright run output; .dockerignore already excludes these from the image.
+test-results/
+playwright-report/
+playwright/.cache/
 pass.txt
+
+# Local working docs (not committed)
+docs/

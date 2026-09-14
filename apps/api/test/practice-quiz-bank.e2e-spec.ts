@@ -1,20 +1,22 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import { request, makeApp, fixtureLogin, list, str } from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
 import { submitAllPracticeModules } from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string, password = 'password123') {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
-const TARGETS = { RW_MODULE_1: 5, RW_MODULE_2: 5, MATH_MODULE_1: 5, MATH_MODULE_2: 5 };
+const TARGETS = {
+  RW_MODULE_1: 5,
+  RW_MODULE_2: 5,
+  MATH_MODULE_1: 5,
+  MATH_MODULE_2: 5,
+};
 const RATIO = { EASY: 40, MEDIUM: 40, HARD: 20 };
 
 /** Bulk-imports `perDifficulty` MCQ_SINGLE questions of each difficulty into
@@ -25,8 +27,13 @@ async function seedBank(
   quizId: string,
   perDifficulty: number,
 ) {
-  const modules = ['RW_MODULE_1', 'RW_MODULE_2', 'MATH_MODULE_1', 'MATH_MODULE_2'];
-  const questions = [];
+  const modules = [
+    'RW_MODULE_1',
+    'RW_MODULE_2',
+    'MATH_MODULE_1',
+    'MATH_MODULE_2',
+  ];
+  const questions: Record<string, unknown>[] = [];
   for (const module of modules) {
     for (const difficulty of ['EASY', 'MEDIUM', 'HARD']) {
       for (let i = 0; i < perDifficulty; i++) {
@@ -60,14 +67,7 @@ describe('Practice quiz — question bank mode (e2e)', () => {
   let studentMembershipId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -78,8 +78,8 @@ describe('Practice quiz — question bank mode (e2e)', () => {
       .get('/memberships')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    studentMembershipId = (
-      members.body as { id: string; user: { email: string } }[]
+    studentMembershipId = list<{ id: string; user: { email: string } }>(
+      members.body,
     ).find((m) => m.user.email === 'student@acme.test')!.id;
   });
 
@@ -91,7 +91,12 @@ describe('Practice quiz — question bank mode (e2e)', () => {
     const res = await request(app.getHttpServer())
       .post('/practice-quizzes')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ title, mode: 'BANK', bankModuleTargets: TARGETS, bankDifficultyRatio: RATIO })
+      .send({
+        title,
+        mode: 'BANK',
+        bankModuleTargets: TARGETS,
+        bankDifficultyRatio: RATIO,
+      })
       .expect(201);
     return res.body.id as string;
   }
@@ -102,13 +107,27 @@ describe('Practice quiz — question bank mode (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {}, difficulty: 'EASY' })
+      .send({
+        type: 'ESSAY',
+        module: 'RW_MODULE_1',
+        prompt: 'x',
+        points: 1,
+        config: {},
+        difficulty: 'EASY',
+      })
       .expect(400);
 
     await request(app.getHttpServer())
       .post(`/practice-quizzes/${quizId}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'FILE_UPLOAD', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {}, difficulty: 'EASY' })
+      .send({
+        type: 'FILE_UPLOAD',
+        module: 'RW_MODULE_1',
+        prompt: 'x',
+        points: 1,
+        config: {},
+        difficulty: 'EASY',
+      })
       .expect(400);
 
     await request(app.getHttpServer())
@@ -120,7 +139,10 @@ describe('Practice quiz — question bank mode (e2e)', () => {
         prompt: 'no difficulty',
         points: 1,
         config: {},
-        options: [{ text: 'A', isCorrect: true }, { text: 'B', isCorrect: false }],
+        options: [
+          { text: 'A', isCorrect: true },
+          { text: 'B', isCorrect: false },
+        ],
       })
       .expect(400);
   });
@@ -177,11 +199,19 @@ describe('Practice quiz — question bank mode (e2e)', () => {
       .expect(200);
     expect(detail.body.questions).toHaveLength(20);
     const byModuleDifficulty = new Map<string, number>();
-    for (const q of detail.body.questions as { module: string; difficulty: string }[]) {
+    for (const q of list<{
+      module: string;
+      difficulty: string;
+    }>(detail.body.questions)) {
       const key = `${q.module}/${q.difficulty}`;
       byModuleDifficulty.set(key, (byModuleDifficulty.get(key) ?? 0) + 1);
     }
-    for (const module of ['RW_MODULE_1', 'RW_MODULE_2', 'MATH_MODULE_1', 'MATH_MODULE_2']) {
+    for (const module of [
+      'RW_MODULE_1',
+      'RW_MODULE_2',
+      'MATH_MODULE_1',
+      'MATH_MODULE_2',
+    ]) {
       expect(byModuleDifficulty.get(`${module}/EASY`)).toBe(2);
       expect(byModuleDifficulty.get(`${module}/MEDIUM`)).toBe(2);
       expect(byModuleDifficulty.get(`${module}/HARD`)).toBe(1);
@@ -204,7 +234,7 @@ describe('Practice quiz — question bank mode (e2e)', () => {
       .get(`/practice-quizzes/${quizId}`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    for (const q of bank.body.questions as { id: string }[]) {
+    for (const q of list<{ id: string }>(bank.body.questions)) {
       await request(app.getHttpServer())
         .delete(`/practice-quizzes/${quizId}/questions/${q.id}`)
         .set('Authorization', `Bearer ${acmeAdminToken}`)
@@ -238,7 +268,7 @@ describe('Practice quiz — question bank mode (e2e)', () => {
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ quizId })
       .expect(201);
-    await submitAllPracticeModules(app, studentToken, start.body.id);
+    await submitAllPracticeModules(app, studentToken, str(start.body.id));
 
     const analytics = await request(app.getHttpServer())
       .get(`/practice-quizzes/${quizId}/analytics`)

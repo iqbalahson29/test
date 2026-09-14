@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -32,7 +41,7 @@ export class MembershipsController {
     @CurrentUser() user: AccessTokenPayload,
     @Body() dto: CreateMembershipDto,
   ) {
-    return this.memberships.create(user.tenantId, dto, user.membershipId);
+    return this.memberships.create(user.tenantId, dto, user);
   }
 
   @Patch(':id')
@@ -42,15 +51,12 @@ export class MembershipsController {
     @Param('id') id: string,
     @Body() dto: UpdateMembershipRoleDto,
   ) {
-    return this.memberships.updateRole(user.tenantId, id, dto.role, user.membershipId);
+    return this.memberships.updateRole(user.tenantId, id, dto.role, user);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN)
-  remove(
-    @CurrentUser() user: AccessTokenPayload,
-    @Param('id') id: string,
-  ) {
-    return this.memberships.remove(user.tenantId, id, user.membershipId);
+  remove(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+    return this.memberships.remove(user.tenantId, id, user);
   }
 }

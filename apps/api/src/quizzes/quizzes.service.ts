@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { QuizStatus } from '@prisma/client';
 import { QUIZ_MODULE_SEQUENCE } from '@quiz-platform/shared';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -9,7 +13,10 @@ import { UpdateQuizDto } from './dto/update-quiz.dto';
 
 /** Mirrors AttemptsService's own lock-liveness check, for the read-only
  * teacher-facing "is this attempt active right now" indicator. */
-function isSessionLive(lockSessionId: string | null, lastHeartbeatAt: Date | null): boolean {
+function isSessionLive(
+  lockSessionId: string | null,
+  lastHeartbeatAt: Date | null,
+): boolean {
   if (!lockSessionId || !lastHeartbeatAt) return false;
   return lastHeartbeatAt.getTime() > Date.now() - SESSION_LOCK_TIMEOUT_MS;
 }
@@ -37,10 +44,13 @@ export class QuizzesService {
       where: { quizId, status: 'GRADED' },
       select: { score: true, maxScore: true },
     });
-    const percents = graded.map((a) => (Number(a.score) / Number(a.maxScore)) * 100);
+    const percents = graded.map(
+      (a) => (Number(a.score) / Number(a.maxScore)) * 100,
+    );
     return percents.length > 0
-      ? Math.round((percents.reduce((sum, p) => sum + p, 0) / percents.length) * 100) /
-          100
+      ? Math.round(
+          (percents.reduce((sum, p) => sum + p, 0) / percents.length) * 100,
+        ) / 100
       : null;
   }
 
@@ -90,7 +100,11 @@ export class QuizzesService {
     };
   }
 
-  async create(tenantId: string, createdByMembershipId: string, dto: CreateQuizDto) {
+  async create(
+    tenantId: string,
+    createdByMembershipId: string,
+    dto: CreateQuizDto,
+  ) {
     const quiz = await this.prisma.quiz.create({
       data: {
         tenantId,
@@ -101,12 +115,21 @@ export class QuizzesService {
         shuffleQuestions: dto.shuffleQuestions ?? false,
         shuffleOptions: dto.shuffleOptions ?? false,
         showDifficultyToStudents: dto.showDifficultyToStudents ?? false,
-        availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
-        availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
+        availableFrom: dto.availableFrom
+          ? new Date(dto.availableFrom)
+          : undefined,
+        availableUntil: dto.availableUntil
+          ? new Date(dto.availableUntil)
+          : undefined,
         passMarkPercent: dto.passMarkPercent,
       },
     });
-    await this.auditLog.log(tenantId, quiz.id, createdByMembershipId, 'QUIZ_CREATED');
+    await this.auditLog.log(
+      tenantId,
+      quiz.id,
+      createdByMembershipId,
+      'QUIZ_CREATED',
+    );
     return quiz;
   }
 
@@ -137,8 +160,12 @@ export class QuizzesService {
         shuffleQuestions: dto.shuffleQuestions,
         shuffleOptions: dto.shuffleOptions,
         showDifficultyToStudents: dto.showDifficultyToStudents,
-        availableFrom: dto.availableFrom ? new Date(dto.availableFrom) : undefined,
-        availableUntil: dto.availableUntil ? new Date(dto.availableUntil) : undefined,
+        availableFrom: dto.availableFrom
+          ? new Date(dto.availableFrom)
+          : undefined,
+        availableUntil: dto.availableUntil
+          ? new Date(dto.availableUntil)
+          : undefined,
         passMarkPercent: dto.passMarkPercent,
       },
     });
@@ -178,20 +205,29 @@ export class QuizzesService {
         where: { quizId: id },
         _count: { _all: true },
       });
-      const withQuestions = new Set<string>(byModule.map((g) => g.module as string));
-      const emptyModules = QUIZ_MODULE_SEQUENCE.filter((m) => !withQuestions.has(m));
+      const withQuestions = new Set<string>(
+        byModule.map((g) => g.module as string),
+      );
+      const emptyModules = QUIZ_MODULE_SEQUENCE.filter(
+        (m) => !withQuestions.has(m),
+      );
       if (emptyModules.length > 0) {
         throw new BadRequestException(
           `Cannot ${verb} a quiz with no questions in: ${emptyModules.join(', ')}`,
         );
       }
     }
-    const updated = await this.prisma.quiz.update({ where: { id }, data: { status } });
+    const updated = await this.prisma.quiz.update({
+      where: { id },
+      data: { status },
+    });
     // ARCHIVED -> DRAFT is a restore, not an unpublish (which is
     // PUBLISHED -> DRAFT) — flag it distinctly so the activity feed reads
     // "Restored", not the misleading "Unpublished".
     const auditDetail =
-      quiz.status === QuizStatus.ARCHIVED && status === QuizStatus.DRAFT ? 'RESTORED' : status;
+      quiz.status === QuizStatus.ARCHIVED && status === QuizStatus.DRAFT
+        ? 'RESTORED'
+        : status;
     await this.auditLog.log(
       tenantId,
       id,
@@ -205,7 +241,10 @@ export class QuizzesService {
   /** Promotes quizzes whose scheduled availableFrom time has arrived. Called by QuizSchedulerService's cron tick. */
   async publishDueScheduledQuizzes() {
     const due = await this.prisma.quiz.findMany({
-      where: { status: QuizStatus.SCHEDULED, availableFrom: { lte: new Date() } },
+      where: {
+        status: QuizStatus.SCHEDULED,
+        availableFrom: { lte: new Date() },
+      },
       select: { id: true, tenantId: true },
     });
     if (due.length === 0) return 0;
@@ -215,7 +254,13 @@ export class QuizzesService {
     });
     await Promise.all(
       due.map((q) =>
-        this.auditLog.log(q.tenantId, q.id, null, 'STATUS_CHANGED', 'PUBLISHED'),
+        this.auditLog.log(
+          q.tenantId,
+          q.id,
+          null,
+          'STATUS_CHANGED',
+          'PUBLISHED',
+        ),
       ),
     );
     return due.length;
@@ -298,7 +343,9 @@ export class QuizzesService {
     await this.getOwnQuiz(tenantId, id);
     const attempts = await this.prisma.attempt.findMany({
       where: { quizId: id },
-      include: { student: { include: { user: { select: { name: true, email: true } } } } },
+      include: {
+        student: { include: { user: { select: { name: true, email: true } } } },
+      },
       orderBy: { startedAt: 'desc' },
     });
     return attempts.map((a) => ({
@@ -340,7 +387,9 @@ export class QuizzesService {
       orderBy: [{ module: 'asc' }, { order: 'asc' }],
       include: { options: { orderBy: { order: 'asc' } } },
     });
-    const responseByQuestion = new Map(attempt.responses.map((r) => [r.questionId, r]));
+    const responseByQuestion = new Map(
+      attempt.responses.map((r) => [r.questionId, r]),
+    );
 
     return {
       attemptId: attempt.id,
@@ -352,7 +401,10 @@ export class QuizzesService {
       maxScore: attempt.maxScore,
       startedAt: attempt.startedAt,
       submittedAt: attempt.submittedAt,
-      sessionActive: isSessionLive(attempt.lockSessionId, attempt.lastHeartbeatAt),
+      sessionActive: isSessionLive(
+        attempt.lockSessionId,
+        attempt.lastHeartbeatAt,
+      ),
       questions: questions.map((q) => {
         const response = responseByQuestion.get(q.id);
         return {
@@ -396,7 +448,9 @@ export class QuizzesService {
     actorMembershipId: string,
   ) {
     await this.getOwnQuiz(tenantId, quizId);
-    const attempt = await this.prisma.attempt.findUnique({ where: { id: attemptId } });
+    const attempt = await this.prisma.attempt.findUnique({
+      where: { id: attemptId },
+    });
     if (!attempt || attempt.quizId !== quizId) {
       throw new NotFoundException('Attempt not found');
     }

@@ -33,22 +33,27 @@ export class DashboardService {
   async adminOverview(tenantId: string, range: string) {
     const days = RANGE_DAYS[range] ?? 30;
 
-    const [quizList, totalMembers, totalAttempts, gradedAttempts, allAssignments] =
-      await Promise.all([
-        this.quizzes.list(tenantId),
-        // Excludes a super admin's membership (if they've entered this
-        // workspace) — same reasoning as memberships.service.ts's list():
-        // it shouldn't count as one of the workspace's own members.
-        this.prisma.membership.count({
-          where: { tenantId, user: { isSuperAdmin: false } },
-        }),
-        this.prisma.attempt.count({ where: { quiz: { tenantId } } }),
-        this.prisma.attempt.findMany({
-          where: { quiz: { tenantId }, status: AttemptStatus.GRADED },
-          select: { score: true, maxScore: true },
-        }),
-        this.assignments.listAll(tenantId),
-      ]);
+    const [
+      quizList,
+      totalMembers,
+      totalAttempts,
+      gradedAttempts,
+      allAssignments,
+    ] = await Promise.all([
+      this.quizzes.list(tenantId),
+      // Excludes a super admin's membership (if they've entered this
+      // workspace) — same reasoning as memberships.service.ts's list():
+      // it shouldn't count as one of the workspace's own members.
+      this.prisma.membership.count({
+        where: { tenantId, user: { isSuperAdmin: false } },
+      }),
+      this.prisma.attempt.count({ where: { quiz: { tenantId } } }),
+      this.prisma.attempt.findMany({
+        where: { quiz: { tenantId }, status: AttemptStatus.GRADED },
+        select: { score: true, maxScore: true },
+      }),
+      this.assignments.listAll(tenantId),
+    ]);
 
     const percents = gradedAttempts.map(
       (a) => (Number(a.score) / Number(a.maxScore)) * 100,
@@ -58,7 +63,9 @@ export class DashboardService {
         ? round2(percents.reduce((sum, p) => sum + p, 0) / percents.length)
         : null;
 
-    const statusCounts = new Map<QuizStatus, number>(ALL_STATUSES.map((s) => [s, 0]));
+    const statusCounts = new Map<QuizStatus, number>(
+      ALL_STATUSES.map((s) => [s, 0]),
+    );
     for (const q of quizList) {
       statusCounts.set(q.status, (statusCounts.get(q.status) ?? 0) + 1);
     }
@@ -93,7 +100,8 @@ export class DashboardService {
     }));
 
     const quizzes = [...quizList].sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
 
     const now = Date.now();

@@ -1,41 +1,29 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import {
+  request,
+  makeApp,
+  fixtureLogin,
+  fixtureTenantAdmin,
+  str,
+  list,
+  must,
+} from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
 import { fillRemainingModules, submitAllModules } from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string, password = 'password123') {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
 // Requests + approves a brand-new one-tenant workspace via the platform
 // super admin, to get an admin token scoped to a *different* tenant than
 // acme-school — used to exercise tenant isolation.
 async function createTenantAdmin(app: INestApplication<App>, label: string) {
-  const superadmin = await login(app, 'superadmin@quiz-platform.test');
-  const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.test`;
-  const password = 'Password123';
-  const reqRes = await request(app.getHttpServer())
-    .post('/tenant-requests')
-    .send({
-      workspaceName: `Beta ${label} ${Date.now()}`,
-      requesterName: 'Beta Admin',
-      requesterEmail: email,
-      password,
-    })
-    .expect(201);
-  await request(app.getHttpServer())
-    .post(`/tenant-requests/${reqRes.body.id}/approve`)
-    .set('Authorization', `Bearer ${superadmin.accessToken}`)
-    .expect(201);
-  const adminLogin = await login(app, email, password);
-  return { token: adminLogin.accessToken as string, email };
+  return fixtureTenantAdmin(app, label);
 }
 
 describe('Storage / file uploads (e2e)', () => {
@@ -46,14 +34,7 @@ describe('Storage / file uploads (e2e)', () => {
   let studentMembershipId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -67,8 +48,8 @@ describe('Storage / file uploads (e2e)', () => {
       .get('/memberships')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    studentMembershipId = (
-      members.body as { id: string; user: { email: string } }[]
+    studentMembershipId = list<{ id: string; user: { email: string } }>(
+      members.body,
     ).find((m) => m.user.email === 'student@acme.test')!.id;
   });
 
@@ -118,7 +99,9 @@ describe('Storage / file uploads (e2e)', () => {
     const attemptId = start.body.id as string;
 
     const uploadRes = await request(app.getHttpServer())
-      .post(`/attempts/${attemptId}/responses/${question.body.id}/upload-url`)
+      .post(
+        `/attempts/${attemptId}/responses/${str(question.body.id)}/upload-url`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ filename: 'proof.txt', contentType: 'text/plain' })
       .expect(201);
@@ -137,32 +120,35 @@ describe('Storage / file uploads (e2e)', () => {
     expect(putRes.ok).toBe(true);
 
     await request(app.getHttpServer())
-      .patch(`/attempts/${attemptId}/responses/${question.body.id}`)
+      .patch(`/attempts/${attemptId}/responses/${str(question.body.id)}`)
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ fileKey })
       .expect(200);
 
     const submitRes = await submitAllModules(app, studentToken, attemptId);
-    const submittedQuestion = (submitRes.questions as { id: string; fileKey: string }[]).find(
-      (q) => q.id === question.body.id,
-    )!;
+    const submittedQuestion = (
+      submitRes.questions as { id: string; fileKey: string }[]
+    ).find((q) => q.id === question.body.id)!;
     expect(submittedQuestion.fileKey).toBe(fileKey);
 
     const queue = await request(app.getHttpServer())
       .get(`/quizzes/${quizId}/grading-queue`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    const queueItem = queue.body.find(
-      (r: { questionId: string }) => r.questionId === question.body.id,
+    const queueItem = must(
+      list(queue.body).find(
+        (r: { questionId: string }) => r.questionId === question.body.id,
+      ),
+      'upload queue entry',
     );
     expect(queueItem.fileKey).toBe(fileKey);
 
     const downloadRes = await request(app.getHttpServer())
-      .get(`/responses/${queueItem.responseId}/download-url`)
+      .get(`/responses/${str(queueItem.responseId)}/download-url`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
 
-    const getRes = await fetch(downloadRes.body.downloadUrl);
+    const getRes = await fetch(str(downloadRes.body.downloadUrl));
     expect(getRes.ok).toBe(true);
     expect(await getRes.text()).toBe(fileContents);
   });
@@ -206,23 +192,27 @@ describe('Storage / file uploads (e2e)', () => {
     // confirm a teacher from another tenant can't reach this response for
     // a download URL once something is uploaded.
     const uploadRes = await request(app.getHttpServer())
-      .post(`/attempts/${start.body.id}/responses/${question.body.id}/upload-url`)
+      .post(
+        `/attempts/${str(start.body.id)}/responses/${str(question.body.id)}/upload-url`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ filename: 'x.txt', contentType: 'text/plain' })
       .expect(201);
-    await fetch(uploadRes.body.uploadUrl, { method: 'PUT', body: 'x' });
+    await fetch(str(uploadRes.body.uploadUrl), { method: 'PUT', body: 'x' });
     await request(app.getHttpServer())
-      .patch(`/attempts/${start.body.id}/responses/${question.body.id}`)
+      .patch(
+        `/attempts/${str(start.body.id)}/responses/${str(question.body.id)}`,
+      )
       .set('Authorization', `Bearer ${studentToken}`)
       .send({ fileKey: uploadRes.body.fileKey })
       .expect(200);
-    await submitAllModules(app, studentToken, start.body.id);
+    await submitAllModules(app, studentToken, str(start.body.id));
 
     const queue = await request(app.getHttpServer())
       .get(`/quizzes/${quizId}/grading-queue`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    const responseId = queue.body[0].responseId as string;
+    const responseId = str(list(queue.body)[0].responseId);
 
     await request(app.getHttpServer())
       .get(`/responses/${responseId}/download-url`)

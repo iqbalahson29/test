@@ -49,19 +49,42 @@ export class SearchService {
       },
     });
 
-    const tenantNameById = new Map(memberships.map((m) => [m.tenantId, m.tenant.name]));
-    const studentMemberships = memberships.filter((m) => m.role === Role.STUDENT);
+    const tenantNameById = new Map(
+      memberships.map((m) => [m.tenantId, m.tenant.name]),
+    );
+    const studentMemberships = memberships.filter(
+      (m) => m.role === Role.STUDENT,
+    );
     const adminMemberships = memberships.filter((m) => m.role === Role.ADMIN);
     const studentMembershipIds = studentMemberships.map((m) => m.id);
     const adminTenantIds = adminMemberships.map((m) => m.tenantId);
-    const membershipIdByTenantId = new Map(memberships.map((m) => [m.tenantId, m.id]));
+    const membershipIdByTenantId = new Map(
+      memberships.map((m) => [m.tenantId, m.id]),
+    );
     const memberTenantIds = new Set(memberships.map((m) => m.tenantId));
 
     const [workspaces, quizzes, members, attempts] = await Promise.all([
       this.searchWorkspaces(query, memberTenantIds),
-      this.searchQuizzes(query, adminTenantIds, studentMembershipIds, membershipIdByTenantId, tenantNameById),
-      this.searchMembers(query, adminTenantIds, membershipIdByTenantId, tenantNameById),
-      this.searchAttempts(query, adminTenantIds, studentMembershipIds, membershipIdByTenantId, tenantNameById),
+      this.searchQuizzes(
+        query,
+        adminTenantIds,
+        studentMembershipIds,
+        membershipIdByTenantId,
+        tenantNameById,
+      ),
+      this.searchMembers(
+        query,
+        adminTenantIds,
+        membershipIdByTenantId,
+        tenantNameById,
+      ),
+      this.searchAttempts(
+        query,
+        adminTenantIds,
+        studentMembershipIds,
+        membershipIdByTenantId,
+        tenantNameById,
+      ),
     ]);
 
     return { workspaces, quizzes, members, attempts };
@@ -73,7 +96,12 @@ export class SearchService {
   ): Promise<SearchResultItem[]> {
     const tenants = await this.prisma.tenant.findMany({
       where: { name: { contains: query, mode: 'insensitive' } },
-      select: { id: true, name: true, slug: true, _count: { select: { memberships: true } } },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        _count: { select: { memberships: true } },
+      },
       orderBy: { name: 'asc' },
       take: RESULT_LIMIT,
     });
@@ -98,7 +126,10 @@ export class SearchService {
 
     if (adminTenantIds.length > 0) {
       const ownQuizzes = await this.prisma.quiz.findMany({
-        where: { tenantId: { in: adminTenantIds }, title: { contains: query, mode: 'insensitive' } },
+        where: {
+          tenantId: { in: adminTenantIds },
+          title: { contains: query, mode: 'insensitive' },
+        },
         select: { id: true, title: true, status: true, tenantId: true },
         orderBy: { updatedAt: 'desc' },
         take: RESULT_LIMIT,
@@ -124,7 +155,10 @@ export class SearchService {
 
       const assignments = await this.prisma.quizAssignment.findMany({
         where: {
-          quiz: { status: QuizStatus.PUBLISHED, title: { contains: query, mode: 'insensitive' } },
+          quiz: {
+            status: QuizStatus.PUBLISHED,
+            title: { contains: query, mode: 'insensitive' },
+          },
           OR: [
             { studentMembershipId: { in: studentMembershipIds } },
             ...(groupIds.length > 0 ? [{ groupId: { in: groupIds } }] : []),
@@ -215,8 +249,10 @@ export class SearchService {
       });
       for (const a of ownAttempts) {
         const scoreLabel =
-          a.status === AttemptStatus.GRADED && a.score !== null && a.maxScore !== null
-            ? `${a.score}/${a.maxScore}`
+          a.status === AttemptStatus.GRADED &&
+          a.score !== null &&
+          a.maxScore !== null
+            ? `${a.score.toString()}/${a.maxScore.toString()}`
             : 'Awaiting grading';
         results.push({
           id: `student-attempt-${a.id}`,
@@ -232,7 +268,10 @@ export class SearchService {
       const pending = await this.prisma.attempt.findMany({
         where: {
           status: AttemptStatus.SUBMITTED,
-          quiz: { tenantId: { in: adminTenantIds }, title: { contains: query, mode: 'insensitive' } },
+          quiz: {
+            tenantId: { in: adminTenantIds },
+            title: { contains: query, mode: 'insensitive' },
+          },
         },
         select: {
           id: true,

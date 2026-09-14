@@ -251,8 +251,9 @@ export function MembersPage() {
     onError: (err: unknown) => onMutationError(err, 'Could not remove the selected members'),
   })
 
-  const copyInviteLink = async (token: string) => {
-    await navigator.clipboard.writeText(`${window.location.origin}/accept-invite/${token}`)
+  const resendInvite = async (id:string) => {
+    try { await memberInvitationsApi.resend(id); await queryClient.invalidateQueries({queryKey:['pending-invitations']}) }
+    catch (e) { window.alert(e instanceof Error ? e.message : 'Could not resend invitation') }
   }
 
   const rows: Row[] = useMemo(() => {
@@ -753,11 +754,11 @@ export function MembersPage() {
                                       className="gap-2 px-2.5 py-2"
                                       onClick={() => {
                                         const invite = invitations?.find((i) => i.id === r.refId)
-                                        if (invite) void copyInviteLink(invite.token)
+                                        if (invite) void resendInvite(invite.id)
                                       }}
                                     >
                                       <Copy />
-                                      Copy invite link
+                                      Resend invitation email
                                     </DropdownMenuItem>
                                     <DropdownMenuItem
                                       variant="destructive"

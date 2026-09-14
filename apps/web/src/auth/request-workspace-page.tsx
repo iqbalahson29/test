@@ -2,7 +2,10 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Building2, CheckCircle2, ShieldCheck, UserPlus } from 'lucide-react'
-import { ApiError, apiPost } from '../lib/api-client'
+import type { OtpRequired } from '@quiz-platform/shared'
+import { OtpCard } from './otp-card'
+import { authOperation } from './session-coordinator'
+import { ApiError } from '../lib/api-client'
 import { AuthLayout } from './auth-layout'
 import { PasswordInput, PasswordStrengthMeter } from './password-field'
 import { isStrongPassword } from './password-rules'
@@ -53,6 +56,7 @@ export function RequestWorkspacePage() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [challenge,setChallenge] = useState<OtpRequired|null>(null)
 
   const validate = (): boolean => {
     const errors: FieldErrors = {
@@ -77,17 +81,20 @@ export function RequestWorkspacePage() {
     }
     setSubmitting(true)
     try {
-      await apiPost('/tenant-requests', {
+      const pending = await authOperation<OtpRequired>('/tenant-requests', {
         ...form,
         description: form.description.trim() || undefined,
       })
-      setSubmitted(true)
+      setChallenge(pending)
+      setForm(v=>({...v,password:''}));setConfirmPassword('')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not submit request')
     } finally {
       setSubmitting(false)
     }
   }
+
+  if(challenge)return <div className="min-h-screen grid place-items-center p-4"><div className="max-w-md w-full"><OtpCard challenge={challenge} onCancel={()=>setChallenge(null)} onVerify={async code=>{await authOperation('/tenant-requests/verify',{challengeId:challenge.challengeId,code});setChallenge(null);setSubmitted(true)}}/></div></div>
 
   if (submitted) {
     return (

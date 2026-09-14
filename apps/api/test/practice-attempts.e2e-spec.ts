@@ -1,17 +1,25 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
+import { INestApplication } from '@nestjs/common';
+import {
+  request,
+  makeApp,
+  fixtureLogin,
+  str,
+  list,
+  must,
+  obj,
+} from './auth-test-helpers';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-import { fillRemainingPracticeModules, submitAllPracticeModules } from './module-test-helpers';
+import {
+  fillRemainingPracticeModules,
+  submitAllPracticeModules,
+} from './module-test-helpers';
 
-async function login(app: INestApplication<App>, email: string) {
-  const res = await request(app.getHttpServer())
-    .post('/auth/login')
-    .send({ email, password: 'password123' })
-    .expect(200);
-  return res.body as { accessToken?: string };
+async function login(
+  app: INestApplication<App>,
+  email: string,
+  _password = 'Password123',
+) {
+  return (await fixtureLogin(app, email)).body;
 }
 
 async function createAssignedPracticeQuiz(
@@ -61,7 +69,9 @@ async function createAssignedPracticeQuiz(
     })
     .expect(201);
 
-  await fillRemainingPracticeModules(app, teacherToken, quizId, ['RW_MODULE_1']);
+  await fillRemainingPracticeModules(app, teacherToken, quizId, [
+    'RW_MODULE_1',
+  ]);
 
   await request(app.getHttpServer())
     .patch(`/practice-quizzes/${quizId}/status`)
@@ -85,14 +95,7 @@ describe('Practice attempts (e2e)', () => {
   let studentMembershipId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.use(cookieParser());
-    await app.init();
+    ({ app } = await makeApp(true));
 
     const adminLogin = await login(app, 'admin@acme.test');
     acmeAdminToken = adminLogin.accessToken!;
@@ -104,8 +107,8 @@ describe('Practice attempts (e2e)', () => {
       .get('/memberships')
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .expect(200);
-    studentMembershipId = (
-      members.body as { id: string; user: { email: string } }[]
+    studentMembershipId = list<{ id: string; user: { email: string } }>(
+      members.body,
     ).find((m) => m.user.email === 'student@acme.test')!.id;
   });
 
@@ -120,13 +123,24 @@ describe('Practice attempts (e2e)', () => {
       .send({ title: 'Unassigned Practice Quiz' })
       .expect(201);
     await request(app.getHttpServer())
-      .post(`/practice-quizzes/${createRes.body.id}/questions`)
+      .post(`/practice-quizzes/${str(createRes.body.id)}/questions`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
-      .send({ type: 'ESSAY', module: 'RW_MODULE_1', prompt: 'x', points: 1, config: {} })
+      .send({
+        type: 'ESSAY',
+        module: 'RW_MODULE_1',
+        prompt: 'x',
+        points: 1,
+        config: {},
+      })
       .expect(201);
-    await fillRemainingPracticeModules(app, acmeAdminToken, createRes.body.id, ['RW_MODULE_1']);
+    await fillRemainingPracticeModules(
+      app,
+      acmeAdminToken,
+      str(createRes.body.id),
+      ['RW_MODULE_1'],
+    );
     await request(app.getHttpServer())
-      .patch(`/practice-quizzes/${createRes.body.id}/status`)
+      .patch(`/practice-quizzes/${str(createRes.body.id)}/status`)
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({ status: 'PUBLISHED' })
       .expect(200);
@@ -155,17 +169,28 @@ describe('Practice attempts (e2e)', () => {
     const body = JSON.stringify(startRes.body);
     expect(body).not.toContain('isCorrect');
 
-    const mcq = startRes.body.questions.find(
-      (q: { id: string }) => q.id === mcqQuestionId,
+    const mcq = must(
+      list(startRes.body.questions).find(
+        (q: { id: string }) => q.id === mcqQuestionId,
+      ),
+      'MCQ question',
     );
-    expect(mcq.options.every((o: object) => !('isCorrect' in o))).toBe(true);
+    expect(list(mcq.options).every((o: object) => !('isCorrect' in o))).toBe(
+      true,
+    );
 
-    const matching = startRes.body.questions.find(
-      (q: { type: string }) => q.type === 'MATCHING',
+    const matching = must(
+      list(startRes.body.questions).find(
+        (q: { type: string }) => q.type === 'MATCHING',
+      ),
+      'matching question',
     );
-    expect(matching.config.pairs).toBeUndefined();
-    expect(matching.config.leftItems).toEqual(['France', 'Japan']);
-    expect(new Set(matching.config.rightItems)).toEqual(new Set(['Paris', 'Tokyo']));
+    // The answer key must not reach the student: pairs are stripped, sides shuffled out.
+    expect(obj(matching.config).pairs).toBeUndefined();
+    expect(obj(matching.config).leftItems).toEqual(['France', 'Japan']);
+    expect(new Set(list(obj(matching.config).rightItems))).toEqual(
+      new Set(['Paris', 'Tokyo']),
+    );
   });
 
   it('autosaves, resumes an in-progress attempt, then submits and locks further edits', async () => {
@@ -196,8 +221,11 @@ describe('Practice attempts (e2e)', () => {
       .send({ quizId })
       .expect(201);
     expect(resumed.body.id).toBe(attemptId);
-    const savedAnswer = resumed.body.questions.find(
-      (q: { id: string }) => q.id === mcqQuestionId,
+    const savedAnswer = must(
+      list(resumed.body.questions).find(
+        (q: { id: string }) => q.id === mcqQuestionId,
+      ),
+      'saved MCQ answer',
     ).answer;
     expect(savedAnswer).toEqual({ optionId: 'whatever' });
 
@@ -231,7 +259,7 @@ describe('Practice attempts (e2e)', () => {
       .send({ quizId })
       .expect(201);
 
-    await submitAllPracticeModules(app, studentToken, first.body.id);
+    await submitAllPracticeModules(app, studentToken, str(first.body.id));
 
     await request(app.getHttpServer())
       .post('/practice-attempts')

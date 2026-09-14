@@ -26,8 +26,16 @@ export class PracticeAttemptsController {
   constructor(private readonly attempts: PracticeAttemptsService) {}
 
   @Post()
-  start(@CurrentUser() user: AccessTokenPayload, @Body() dto: StartPracticeAttemptDto) {
-    return this.attempts.start(user.tenantId, user.membershipId, dto.quizId, user.sessionId);
+  start(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() dto: StartPracticeAttemptDto,
+  ) {
+    return this.attempts.start(
+      user.tenantId,
+      user.membershipId,
+      dto.quizId,
+      user.sessionId,
+    );
   }
 
   @Get()
@@ -50,7 +58,13 @@ export class PracticeAttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: SavePracticeResponseDto,
   ) {
-    return this.attempts.saveResponse(user.membershipId, id, questionId, dto, user.sessionId);
+    return this.attempts.saveResponse(
+      user.membershipId,
+      id,
+      questionId,
+      dto,
+      user.sessionId,
+    );
   }
 
   @Post(':id/heartbeat')
@@ -83,7 +97,12 @@ export class PracticeAttemptsController {
     @Param('questionId') questionId: string,
     @Param('optionId') optionId: string,
   ) {
-    return this.attempts.getOptionImageUrl(user.membershipId, id, questionId, optionId);
+    return this.attempts.getOptionImageUrl(
+      user.membershipId,
+      id,
+      questionId,
+      optionId,
+    );
   }
 
   @Post(':id/responses/:questionId/upload-url')
@@ -93,16 +112,32 @@ export class PracticeAttemptsController {
     @Param('questionId') questionId: string,
     @Body() dto: RequestPracticeUploadUrlDto,
   ) {
-    return this.attempts.getUploadUrl(user.membershipId, id, questionId, dto, user.sessionId);
+    return this.attempts.getUploadUrl(
+      user.membershipId,
+      id,
+      questionId,
+      dto,
+      user.sessionId,
+    );
   }
 
   @Post(':id/modules/complete')
-  completeCurrentModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
-    return this.attempts.completeCurrentModule(user.membershipId, id, user.sessionId);
+  completeCurrentModule(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
+    return this.attempts.completeCurrentModule(
+      user.membershipId,
+      id,
+      user.sessionId,
+    );
   }
 
   @Post(':id/modules/begin-next')
-  beginNextModule(@CurrentUser() user: AccessTokenPayload, @Param('id') id: string) {
+  beginNextModule(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
     return this.attempts.beginNextModule(user.membershipId, id, user.sessionId);
   }
 }
