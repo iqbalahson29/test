@@ -66,7 +66,7 @@ jobs:
             printf 'commit=%s\n' "${{ github.sha }}"
             printf 'runtime_image_id=%s\n' "$(docker image inspect quiz-api:${{ github.sha }} --format '{{.Id}}')"
             printf 'operations_image_id=%s\n' "$(docker image inspect quiz-ops:${{ github.sha }} --format '{{.Id}}')"
-            printf 'spa_sha256=%s\n' "$(find apps/web/dist -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+            printf 'spa_sha256=%s\n' "$(cd apps/web/dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
             printf 'schema_contract=%s\n' "$(cat deploy/auth-contract-v1)"
             printf 'google_enabled=%s\n' "${VITE_AUTH_GOOGLE_ENABLED}"
             printf 'google_client_id=%s\n' "${VITE_GOOGLE_CLIENT_ID}"

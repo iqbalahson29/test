@@ -22,7 +22,7 @@ manifest_value() { [[ -f "$manifest" ]] && sed -n "s/^$1=//p" "$manifest" | head
 # can still be handed an artifact whose baked-in SPA settings were never tested.
 if [[ -f "$manifest" ]]; then
   [[ "$(manifest_value commit)" == "$release_id" ]] || { echo 'Manifest commit does not match this release.' >&2; exit 1; }
-  spa_now=$(find "$release_dir/apps/web/dist" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  spa_now=$(cd "$release_dir/apps/web/dist" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
   [[ "$(manifest_value spa_sha256)" == "$spa_now" ]] || { echo 'SPA bundle does not match the tested manifest.' >&2; exit 1; }
   [[ "$(manifest_value schema_contract)" == "$(cat "$release_dir/deploy/auth-contract-v1")" ]] || { echo 'Schema contract does not match the tested manifest.' >&2; exit 1; }
 else
