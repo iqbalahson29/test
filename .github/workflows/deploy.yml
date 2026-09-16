@@ -106,4 +106,9 @@ jobs:
           RELEASE_ID: ${{ github.sha }}
         run: |
           scp -i ~/.ssh/deploy_key release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/quiz-platform/release-$RELEASE_ID.tar.gz"
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir /opt/quiz-platform/releases/$RELEASE_ID && tar -xzf /opt/quiz-platform/release-$RELEASE_ID.tar.gz -C /opt/quiz-platform/releases/$RELEASE_ID && bash /opt/quiz-platform/releases/$RELEASE_ID/deploy/release.sh $RELEASE_ID"
+          # `mkdir -p`, because release.sh is written to be retried: a run that stops at one of
+          # its gates -- an unrecorded rollout approval, a readiness failure -- leaves the
+          # unpacked directory behind, and a bare mkdir would then fail the retry before the
+          # script could run. The archive is the same immutable bundle and release.sh re-checks
+          # the manifest commit and SPA hash, so re-extracting over it installs nothing new.
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/quiz-platform/releases/$RELEASE_ID && tar -xzf /opt/quiz-platform/release-$RELEASE_ID.tar.gz -C /opt/quiz-platform/releases/$RELEASE_ID && bash /opt/quiz-platform/releases/$RELEASE_ID/deploy/release.sh $RELEASE_ID"
