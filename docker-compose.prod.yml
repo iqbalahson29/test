@@ -44,6 +44,13 @@ services:
     image: ${QUIZ_API_IMAGE:?Set immutable QUIZ_API_IMAGE}
     restart: unless-stopped
     env_file: .env
+    # deploy/release.sh sets AUTH_RELEASE_ID on the `docker compose` process, where it would
+    # otherwise only feed ${...} interpolation and never reach the container -- the API then
+    # reports releaseId null and cannot satisfy the activation gate. Naming the variable with
+    # no value forwards it when set and omits it when not: an empty value would fail the
+    # 40-hex-character check in auth-config.ts and stop the API from starting at all.
+    environment:
+      - AUTH_RELEASE_ID
     depends_on:
       postgres:
         condition: service_healthy
