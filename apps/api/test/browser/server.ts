@@ -36,7 +36,11 @@ async function main() {
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('Cache-Control', 'no-store');
-      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+      // Production sends Cross-Origin-Opener-Policy from nginx (deploy/security-headers.conf)
+      // and the API sends its own through helmet, which this proxy forwards untouched. It is
+      // left off the documents served here because a COOP document makes Playwright's Firefox
+      // lose the navigation's load event -- page.goto then hangs until the test times out even
+      // though the page is complete. Nothing in these specs depends on the header.
       if (req.url?.startsWith('/api/')) {
         const proxy = httpRequest(
           {

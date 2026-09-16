@@ -6,7 +6,7 @@ export function decodeClaims(token:string|null):ClientClaims|null{try{if(!token)
 export const sameContext=(a:ClientClaims|null,b:ClientClaims|null)=>!!a&&!!b&&a.sub===b.sub&&a.sessionId===b.sessionId&&a.contextVersion===b.contextVersion&&a.tenantId===b.tenantId
 export type SessionEvent={type:'result';result:SessionResult}|{type:'logout';expired:boolean}|{type:'connection';reconnecting:boolean;retryAt?:number}
 const listeners=new Set<(event:SessionEvent)=>void>()
-const owner=crypto.randomUUID(),leaseKey='quiz-auth-lease'
+const owner=crypto.randomUUID(),leaseKey='quiz-auth-lease',revisionKey='quiz-auth-revision'
 let channel:BroadcastChannel|null=null
 try{channel=new BroadcastChannel('quiz-auth')}catch{ /* Restricted browser; cookie race recovery remains available. */ }
 let epoch=0,serialTail:Promise<unknown>=Promise.resolve(),inFlight:Promise<RefreshResult>|null=null,timer:ReturnType<typeof setTimeout>|undefined,retryAt=0,reconnecting=false
@@ -17,12 +17,27 @@ let revision=0,lastApplied=0,loggedOut=false
 let pendingLogout:{epoch:number;run:()=>Promise<unknown>}|null=null
 const stamp=()=>revision=Math.max(Date.now(),revision+1)
 const sleep=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms))
+// Every applied revision is recorded here synchronously, so one tab can see that another has
+// moved on. A tab that finishes a refresh broadcasts the result, but that message is not
+// ordered against the session lock being handed to the next tab: without this the next tab
+// sees an unchanged token and refreshes a second time. Only the revision is stored, never a
+// credential.
+const publishRevision=(version:number)=>{try{localStorage.setItem(revisionKey,String(version))}catch{ /* Storage denied; the broadcast is then the only signal. */ }}
+const publishedRevision=()=>{try{const value=Number(localStorage.getItem(revisionKey));return Number.isSafeInteger(value)?value:0}catch{return 0}}
+// Waits, briefly, for the result behind a revision another tab published after `since`, which
+// is read when the refresh starts. A revision already recorded by then belongs to a page that
+// may be long gone, and a message that never arrives falls through to an ordinary refresh, so
+// neither stalls the session.
+async function awaitPublished(since:number,deadline=500){
+  const until=Date.now()+deadline
+  while(publishedRevision()>Math.max(since,lastApplied)&&Date.now()<until)await sleep(20)
+}
 function emit(event:SessionEvent,broadcast=false,version=revision){for(const fn of listeners)fn(event);if(broadcast)try{channel?.postMessage({owner,event,version})}catch{ /* No durable credentials fallback. */ }}
 function connection(value:boolean,after=0){reconnecting=value;retryAt=Date.now()+after*1000;emit({type:'connection',reconnecting:value,retryAt})}
 function schedule(){clearTimeout(timer);const claims=decodeClaims(getAccessToken());if(!claims||reconnecting)return;timer=setTimeout(()=>{void refreshSession().catch(()=>{})},Math.max(1000,claims.exp*1000-Date.now()-60000-Math.random()*5000))}
 function apply(result:SessionResult,broadcast:boolean,version=stamp()){
   if(version<lastApplied)return
-  lastApplied=version;revision=Math.max(revision,version);loggedOut=false
+  lastApplied=version;publishRevision(version);revision=Math.max(revision,version);loggedOut=false
   // Accepting a session ends any unfinished logout: replaying it would revoke this one.
   pendingLogout=null
   const old=decodeClaims(getAccessToken()),next='accessToken'in result?decodeClaims(result.accessToken):null
@@ -31,7 +46,7 @@ function apply(result:SessionResult,broadcast:boolean,version=stamp()){
   if(changed)epoch++
   lastResult=result;setAccessToken('accessToken'in result?result.accessToken:null);connection(false);schedule();emit({type:'result',result},broadcast,version)
 }
-export function clearSession(expired=false,broadcast=true,version=stamp()){if(version<lastApplied)return;lastApplied=version;revision=Math.max(revision,version);loggedOut=true;epoch++;lastResult=null;setAccessToken(null);clearTimeout(timer);connection(false);emit({type:'logout',expired},broadcast,version)}
+export function clearSession(expired=false,broadcast=true,version=stamp()){if(version<lastApplied)return;lastApplied=version;publishRevision(version);revision=Math.max(revision,version);loggedOut=true;epoch++;lastResult=null;setAccessToken(null);clearTimeout(timer);connection(false);emit({type:'logout',expired},broadcast,version)}
 channel?.addEventListener('message',(e:MessageEvent<{owner:string;event:SessionEvent;version:number}>)=>{
   if(e.data.owner===owner||!e.data.event||!Number.isSafeInteger(e.data.version)||e.data.version<lastApplied)return
   const event=e.data.event
@@ -109,12 +124,16 @@ export function refreshSession(force=true):Promise<RefreshResult>{
   if(pendingLogout)pendingLogout=null
   if(loggedOut)return Promise.reject(new ApiError(401,'Please sign in again','SESSION_INVALID'))
   if(inFlight)return inFlight
-  const expectedEpoch=epoch,original=getAccessToken(),version=stamp()
+  const expectedEpoch=epoch,original=getAccessToken(),version=stamp(),published=publishedRevision()
   inFlight=(async()=>{
     if(Date.now()<retryAt)throw new ApiError(429,'Please wait before retrying.','RATE_LIMITED',Math.ceil((retryAt-Date.now())/1000))
     const began=Date.now()
     for(let attempt=0;attempt<3;attempt++){
       try{return await coordinated(async()=>{
+        // Another tab may have refreshed while this one queued for the lock. Its result comes
+        // over the channel rather than with the lock, so wait for it instead of asking the
+        // server for a second rotation the moment the lock is handed over.
+        await awaitPublished(published)
         if(epoch!==expectedEpoch)throw new ApiError(409,'Your account or workspace changed.','AUTH_CONTEXT_CHANGED')
         const current=decodeClaims(getAccessToken())
         if(current&&getAccessToken()!==original&&lastResult&&'accessToken'in lastResult)return lastResult

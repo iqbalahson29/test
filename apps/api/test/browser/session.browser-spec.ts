@@ -227,7 +227,11 @@ test('eight parallel protected 401s produce exactly one refresh and one replay e
   page,
 }) => {
   await harness(page);
-  await apply(page);
+  // The session applied here is the one the route matches on. `result()` stamps `exp` from
+  // the current second, so a regenerated copy stops matching as soon as the clock ticks over:
+  // the probes would all answer 200 and no refresh would ever be provoked.
+  const applied = result();
+  await apply(page, applied);
   let refreshes = 0,
     calls = 0;
   await page.route('**/api/auth/refresh', async (route) => {
@@ -238,7 +242,7 @@ test('eight parallel protected 401s produce exactly one refresh and one replay e
   await page.route('**/api/probe', (route) => {
     calls++;
     return route.fulfill(
-      route.request().headers().authorization?.includes(result().accessToken)
+      route.request().headers().authorization?.includes(applied.accessToken)
         ? { status: 401, json: { code: 'SESSION_INVALID' } }
         : { json: { ok: true } },
     );
