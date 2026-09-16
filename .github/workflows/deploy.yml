@@ -82,7 +82,10 @@ jobs:
           name: release-${{ github.sha }}
           path: release.tar.gz
   deploy:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # Every push to main that passes validate deploys automatically. workflow_dispatch is kept
+    # only so a release can be re-run by hand (e.g. after fixing a droplet-side issue) without
+    # needing an empty commit.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     environment: production
@@ -107,7 +110,7 @@ jobs:
         run: |
           scp -i ~/.ssh/deploy_key release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/quiz-platform/release-$RELEASE_ID.tar.gz"
           # `mkdir -p`, because release.sh is written to be retried: a run that stops at one of
-          # its gates -- an unrecorded rollout approval, a readiness failure -- leaves the
+          # its gates -- a manifest mismatch, a readiness failure -- leaves the
           # unpacked directory behind, and a bare mkdir would then fail the retry before the
           # script could run. The archive is the same immutable bundle and release.sh re-checks
           # the manifest commit and SPA hash, so re-extracting over it installs nothing new.

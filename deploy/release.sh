@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Run on the host with the reviewed archive already unpacked in releases/<commit>.
-# The operator creates auth-release-approved containing the exact reviewed commit
-# after completing the rollout runbook. This script never resets or seeds a DB.
+# Run on the host with the CI-built archive already unpacked in releases/<commit>. Deploy is
+# now fully automatic (every push to main that passes CI runs this), so there is no separate
+# human rollout approval step -- the manifest/SPA/schema checks below are what stand in its
+# place. This script never resets or seeds a DB.
 set -euo pipefail
 release_id=${1:?Usage: release.sh COMMIT}
 [[ "$release_id" =~ ^[a-f0-9]{40}$ ]] || exit 2
 release_root=/opt/quiz-platform
 release_dir="$release_root/releases/$release_id"
 [[ -d "$release_dir" && -f "$release_root/.env" ]]
-[[ "$(cat "$release_root/auth-release-approved")" == "$release_id" ]] || { echo 'This release has no recorded rollout approval.' >&2; exit 1; }
 exec 9>"$release_root/release.lock"
 flock -n 9 || { echo 'Another release is running.' >&2; exit 1; }
 ln -sfn "$release_root/.env" "$release_dir/.env"
