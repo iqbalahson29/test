@@ -48,6 +48,24 @@ if [[ "$host_google" == 'true' ]]; then
   [[ "$host_client" == "$(manifest_value google_client_id)" ]] || { echo 'Google client id differs between host and tested artifact.' >&2; exit 1; }
 fi
 
+
+# The database password is in .env twice: POSTGRES_PASSWORD initializes the cluster
+# (docker-compose.prod.yml) and the password inside DATABASE_URL is what the API and the
+# migration below authenticate with. Nothing else compares them, so a mismatch reached the
+# migration as a P1000 -- past the maintenance switch, with the site already dark.
+db_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$release_root/.env" | head -1)
+url_password=$(sed -n 's|^DATABASE_URL=postgres\(ql\)\{0,1\}://[^:]*:\([^@]*\)@.*|\2|p' "$release_root/.env" | head -1)
+[[ -n "$db_password" && -n "$url_password" ]] || { echo 'POSTGRES_PASSWORD or the DATABASE_URL password is missing from .env.' >&2; exit 1; }
+# `docker compose --env-file` strips surrounding quotes and expands $VAR; the plain
+# `docker run --env-file` that migrates does neither. Either character makes the two disagree
+# at runtime while reading as identical in the file.
+both_passwords="$db_password$url_password"
+[[ "$both_passwords" != *'"'* && "$both_passwords" != *"'"* && "$both_passwords" != *'$'* ]] \
+  || { echo 'Quotes or $ in the database password are read differently by compose and docker run; use neither.' >&2; exit 1; }
+# A password holding URL-reserved characters is percent-encoded in DATABASE_URL only, so the
+# encoded form of that half is an equally valid match for the raw POSTGRES_PASSWORD.
+[[ "$db_password" == "$url_password" || "$db_password" == "$(printf '%b' "${url_password//%/\\x}")" ]] \
+  || { echo 'POSTGRES_PASSWORD and the password in DATABASE_URL differ; the migration would fail with P1000.' >&2; exit 1; }
 mkdir -p /var/www/quiz-platform/releases
 # Every failure after this point intentionally leaves maintenance in place.
 touch /var/www/quiz-platform/maintenance
