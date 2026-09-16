@@ -27,6 +27,10 @@ if (!databaseUrl) {
 }
 
 const container = `quiz-api-verify-${randomBytes(4).toString('hex')}`;
+// Host networking binds this port on every interface. Keep it below 32768: ports in the range
+// Linux lends to outgoing connections can intermittently be in use when the container starts.
+const apiPort = 13000;
+const api = `http://127.0.0.1:${apiPort}`;
 const docker = (args, options = {}) =>
   execFileSync('docker', args, { encoding: 'utf8', ...options });
 
@@ -65,7 +69,7 @@ try {
   // container cannot reach through host-gateway.
   docker([
     'run', '-d', '--name', container, '--network', 'host',
-    '-e', 'PORT=53000',
+    '-e', `PORT=${apiPort}`,
     '-e', `DATABASE_URL=${databaseUrl}`,
     '-e', 'NODE_ENV=production',
     '-e', 'AUTH_RELEASE_STAGE=local',
@@ -102,7 +106,7 @@ try {
   step('waiting for /health');
   let healthy = false;
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = spawnSync('curl', ['-fsS', 'http://127.0.0.1:53000/health'], { encoding: 'utf8' });
+    const probe = spawnSync('curl', ['-fsS', `${api}/health`], { encoding: 'utf8' });
     if (probe.status === 0) {
       healthy = true;
       console.log(`[verify-runtime-image] /health -> ${probe.stdout.trim()}`);
@@ -117,7 +121,7 @@ try {
     // A real authenticated read: this only answers if the generated client can query.
     step('exercising login context initialization');
     const context = spawnSync('curl', [
-      '-fsS', '-X', 'POST', 'http://127.0.0.1:53000/auth/context',
+      '-fsS', '-X', 'POST', `${api}/auth/context`,
       '-H', 'Content-Type: application/json',
       '-H', 'X-Quiz-Client: web',
       '-H', 'Origin: http://localhost:5173',
@@ -131,7 +135,7 @@ try {
     // The activation gate release.sh depends on: schema readiness plus release identity.
     step('exercising the release readiness gate');
     const release = spawnSync('curl', [
-      '-fsS', 'http://127.0.0.1:53000/health/release',
+      '-fsS', `${api}/health/release`,
       '-H', 'X-Quiz-Client: web', '-H', 'Origin: http://localhost:5173',
     ], { encoding: 'utf8' });
     if (release.status !== 0) {
@@ -146,7 +150,7 @@ try {
     step('exercising an unauthenticated protected read (must be 401, not 503)');
     const protectedRead = spawnSync('curl', [
       '-s', '-o', '/dev/null', '-w', '%{http_code}',
-      'http://127.0.0.1:53000/auth/sessions',
+      `${api}/auth/sessions`,
       '-H', 'X-Quiz-Client: web', '-H', 'Origin: http://localhost:5173',
     ], { encoding: 'utf8' });
     if (protectedRead.stdout.trim() !== '401') {

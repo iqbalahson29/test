@@ -16,13 +16,17 @@ export QUIZ_API_IMAGE="quiz-api:$release_id" QUIZ_OPERATIONS_IMAGE="quiz-operati
 
 manifest="$release_dir/release-manifest/release-manifest.txt"
 manifest_value() { [[ -f "$manifest" ]] && sed -n "s/^$1=//p" "$manifest" | head -1; }
+# Must stay identical to how CI records spa_sha256 in deploy.yml. sha256sum prints each file's
+# path, so the same files hashed from a different directory, or sorted in another locale, differ.
+spa_hash() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
+compose() { docker compose -p quiz-platform --env-file "$release_root/.env" -f "$release_dir/docker-compose.prod.yml" "$@"; }
 
 # The manifest records what CI actually built and tested. Verify the archive on this host is
 # that same commit and SPA before anything is installed: a host whose configuration is fine
 # can still be handed an artifact whose baked-in SPA settings were never tested.
 if [[ -f "$manifest" ]]; then
   [[ "$(manifest_value commit)" == "$release_id" ]] || { echo 'Manifest commit does not match this release.' >&2; exit 1; }
-  spa_now=$(cd "$release_dir/apps/web/dist" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  spa_now=$(spa_hash "$release_dir/apps/web/dist")
   [[ "$(manifest_value spa_sha256)" == "$spa_now" ]] || { echo 'SPA bundle does not match the tested manifest.' >&2; exit 1; }
   [[ "$(manifest_value schema_contract)" == "$(cat "$release_dir/deploy/auth-contract-v1")" ]] || { echo 'Schema contract does not match the tested manifest.' >&2; exit 1; }
 else
@@ -66,6 +70,38 @@ both_passwords="$db_password$url_password"
 # encoded form of that half is an equally valid match for the raw POSTGRES_PASSWORD.
 [[ "$db_password" == "$url_password" || "$db_password" == "$(printf '%b' "${url_password//%/\\x}")" ]] \
   || { echo 'POSTGRES_PASSWORD and the password in DATABASE_URL differ; the migration would fail with P1000.' >&2; exit 1; }
+
+# Create dependencies and wait for them to be *ready*, not merely started. On a running host this
+# is a no-op, so it happens before the maintenance switch: the rehearsal below needs the database.
+compose up -d --wait postgres minio
+
+# Rehearse the migration on a throwaway copy of the live database while the site is still up.
+# CI only ever migrates an empty database, and two failures only this host can produce were
+# otherwise discovered by the real migration, with the site already dark:
+# - P1000 although .env is consistent: a data volume keeps the password it was initialized with.
+#   POSTGRES_PASSWORD applies to an empty volume only, so editing .env later changes nothing.
+# - A migration that fails on existing rows. A failed migration is also recorded in the real
+#   database, and every later deploy then stops with P3009 until it is resolved by hand.
+db_url=$(sed -n 's/^DATABASE_URL=//p' "$release_root/.env" | head -1)
+db_query=''; [[ "$db_url" == *'?'* ]] && db_query="?${db_url#*\?}"
+db_base=${db_url%%\?*}
+db_name=${db_base##*/}
+rehearsal_db="${db_name}_release_rehearsal"
+drop_rehearsal() { compose exec -T postgres sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force "$1"' sh "$rehearsal_db"; }
+drop_rehearsal
+compose exec -T postgres bash -c 'set -eo pipefail; createdb -U "$POSTGRES_USER" "$1"
+  pg_dump -U "$POSTGRES_USER" --no-owner "$2" | psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" >/dev/null' \
+  bash "$rehearsal_db" "$db_name"
+# `-e DATABASE_URL` without a value takes it from this environment, keeping the password out of argv.
+if ! DATABASE_URL="${db_base%/*}/$rehearsal_db$db_query" docker run --rm --network quiz-platform_default \
+    --env-file "$release_root/.env" -e DATABASE_URL "$QUIZ_OPERATIONS_IMAGE" pnpm exec prisma migrate deploy; then
+  drop_rehearsal
+  echo 'Migrations failed on a copy of the live database (Prisma error above). Nothing was changed; the site is still up.' >&2
+  echo 'P1000: the password stored in the database differs from .env. P3009: an earlier attempt left a failed migration.' >&2
+  exit 1
+fi
+drop_rehearsal
+
 mkdir -p /var/www/quiz-platform/releases
 # Every failure after this point intentionally leaves maintenance in place.
 touch /var/www/quiz-platform/maintenance
@@ -84,16 +120,13 @@ install -m 644 "$release_dir/deploy/nginx-quiz-platform.conf" /etc/nginx/sites-a
 nginx -t
 systemctl reload nginx
 
-# Create dependencies and wait for them to be *ready*, not merely started, before the one
-# explicit migration invocation. An empty or cold host otherwise reaches migrate first.
-docker compose -p quiz-platform --env-file "$release_root/.env" -f "$release_dir/docker-compose.prod.yml" up -d --wait postgres minio
 docker run --rm --network quiz-platform_default --env-file "$release_root/.env" "$QUIZ_OPERATIONS_IMAGE" pnpm exec prisma migrate deploy
 
 # Staging must be safe to re-run: `cp -a` into an existing directory nests a second copy,
 # so a retried release would otherwise serve releases/<id>/dist instead of releases/<id>.
 static_dir="/var/www/quiz-platform/releases/$release_id"
 if [[ -e "$static_dir" ]]; then
-  staged=$(find "$static_dir" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  staged=$(spa_hash "$static_dir")
   [[ "$staged" == "$(manifest_value spa_sha256)" ]] || { echo 'Existing staged SPA differs from this release; remove it before retrying.' >&2; exit 1; }
 else
   rm -rf "$static_dir.staging"
