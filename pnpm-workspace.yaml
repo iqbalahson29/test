@@ -9,3 +9,8 @@ allowBuilds:
   esbuild: true
   prisma: true
   unrs-resolver: true
+# Required by `pnpm deploy` (apps/api/Dockerfile): from pnpm 10 on, a non-injected workspace
+# can only be deployed with `--legacy`, and that implementation ignores this lockfile and
+# re-resolves the whole graph from the registry -- slow, and it exhausted the build
+# container's heap. With this set, `pnpm deploy` installs from the lockfile and the store.
+injectWorkspacePackages: true

@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @quiz-platform/shared build && pnpm --filter @quiz-platform/shared build:cjs
 RUN pnpm --filter @quiz-platform/api exec prisma generate && pnpm --filter @quiz-platform/api build
 # Only explicit runtime files and production dependencies enter the API image.
-RUN pnpm --filter @quiz-platform/api deploy --legacy --prod /runtime
+RUN pnpm --filter @quiz-platform/api deploy --prod /runtime
 # `pnpm deploy` builds an isolated dependency tree, so the client generated above is not
 # carried into it. Resolve both trees through Node and assert the result: a missing client
 # must fail the build here rather than at container start.
