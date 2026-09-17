@@ -217,9 +217,10 @@ export function validateAuthConfig(input: Record<string, unknown>) {
     (!sender || !['all', 'off'].includes(mode) || allowlist.length)
   )
     fail('AUTH_RELEASE_STAGE');
-  if (c.S3_ENDPOINT) {
+  for (const key of ['S3_ENDPOINT', 'S3_PUBLIC_ENDPOINT']) {
+    if (!c[key]) continue;
     try {
-      const u = new URL(scalar(c.S3_ENDPOINT, 'S3_ENDPOINT'));
+      const u = new URL(scalar(c[key], key));
       if (
         !['http:', 'https:'].includes(u.protocol) ||
         u.username ||
@@ -227,11 +228,22 @@ export function validateAuthConfig(input: Record<string, unknown>) {
         u.search ||
         u.hash
       )
-        fail('S3_ENDPOINT');
+        fail(key);
     } catch {
-      fail('S3_ENDPOINT');
+      fail(key);
     }
   }
+  // Browsers upload straight to presigned URLs, and an HTTPS page blocks http:// ones as mixed
+  // content. S3_ENDPOINT may be the internal address only when S3_PUBLIC_ENDPOINT is set.
+  if (
+    hosted &&
+    c.S3_ENDPOINT &&
+    !scalar(
+      c.S3_PUBLIC_ENDPOINT || c.S3_ENDPOINT,
+      'S3_PUBLIC_ENDPOINT',
+    ).startsWith('https://')
+  )
+    fail('S3_PUBLIC_ENDPOINT');
   if (c.BREVO_WEBHOOK_PREVIOUS_SECRET) {
     const until = Date.parse(String(c.BREVO_WEBHOOK_PREVIOUS_UNTIL));
     if (

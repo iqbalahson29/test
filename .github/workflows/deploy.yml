@@ -112,10 +112,14 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           RELEASE_ID: ${{ github.sha }}
         run: |
-          scp -i ~/.ssh/deploy_key release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/quiz-platform/release-$RELEASE_ID.tar.gz"
+          # BatchMode fails instead of waiting on a prompt nobody can answer. The release runs long,
+          # quiet steps (image builds, migrations); keepalives stop an idle connection from being
+          # dropped in between, which would kill release.sh partway through.
+          ssh_opts=(-i ~/.ssh/deploy_key -o BatchMode=yes -o ServerAliveInterval=30)
+          scp "${ssh_opts[@]}" release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/quiz-platform/release-$RELEASE_ID.tar.gz"
           # `mkdir -p`, because release.sh is written to be retried: a run that stops at one of
           # its gates -- a manifest mismatch, a readiness failure -- leaves the
           # unpacked directory behind, and a bare mkdir would then fail the retry before the
           # script could run. The archive is the same immutable bundle and release.sh re-checks
           # the manifest commit and SPA hash, so re-extracting over it installs nothing new.
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/quiz-platform/releases/$RELEASE_ID && tar -xzf /opt/quiz-platform/release-$RELEASE_ID.tar.gz -C /opt/quiz-platform/releases/$RELEASE_ID && bash /opt/quiz-platform/releases/$RELEASE_ID/deploy/release.sh $RELEASE_ID"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/quiz-platform/releases/$RELEASE_ID && tar -xzf /opt/quiz-platform/release-$RELEASE_ID.tar.gz -C /opt/quiz-platform/releases/$RELEASE_ID && bash /opt/quiz-platform/releases/$RELEASE_ID/deploy/release.sh $RELEASE_ID"

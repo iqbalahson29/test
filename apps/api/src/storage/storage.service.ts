@@ -15,11 +15,18 @@ export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name);
   private readonly s3: S3Client;
   private readonly bucket: string;
+  private readonly endpoint: string;
+  // Where browsers reach storage, when that is not where the API does. In production the API
+  // talks to MinIO on the compose network and browsers go through nginx's /storage/ prefix.
+  private readonly publicEndpoint?: string;
 
   constructor(private readonly config: ConfigService) {
     this.bucket = this.config.getOrThrow<string>('S3_BUCKET');
+    this.endpoint = this.config.getOrThrow<string>('S3_ENDPOINT');
+    this.publicEndpoint =
+      this.config.get<string>('S3_PUBLIC_ENDPOINT') || undefined;
     this.s3 = new S3Client({
-      endpoint: this.config.getOrThrow<string>('S3_ENDPOINT'),
+      endpoint: this.endpoint,
       region: this.config.getOrThrow<string>('S3_REGION'),
       credentials: {
         accessKeyId: this.config.getOrThrow<string>('S3_ACCESS_KEY_ID'),
@@ -51,15 +58,31 @@ export class StorageService implements OnModuleInit {
     }
   }
 
+  /**
+   * A presigned URL is valid only for the host and path it was signed with, and a proxy that
+   * strips a path prefix changes the path. So URLs are signed for S3_ENDPOINT and only then
+   * moved under S3_PUBLIC_ENDPOINT; nginx strips that prefix again and forwards S3_ENDPOINT's
+   * host, so MinIO verifies exactly the request that was signed.
+   */
+  private toPublicUrl(signedUrl: string): string {
+    if (!this.publicEndpoint) return signedUrl;
+    const url = new URL(signedUrl);
+    const signedBase = new URL(this.endpoint).pathname.replace(/\/+$/, '');
+    const publicBase = new URL(this.publicEndpoint);
+    return `${publicBase.origin}${publicBase.pathname.replace(/\/+$/, '')}${url.pathname.slice(signedBase.length)}${url.search}`;
+  }
+
   async getUploadUrl(key: string, contentType: string): Promise<string> {
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       ContentType: contentType,
     });
-    return getSignedUrl(this.s3, command, {
-      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
-    });
+    return this.toPublicUrl(
+      await getSignedUrl(this.s3, command, {
+        expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+      }),
+    );
   }
 
   async getDownloadUrl(key: string): Promise<string> {
@@ -68,9 +91,11 @@ export class StorageService implements OnModuleInit {
       Key: key,
       ResponseContentDisposition: 'attachment',
     });
-    return getSignedUrl(this.s3, command, {
-      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
-    });
+    return this.toPublicUrl(
+      await getSignedUrl(this.s3, command, {
+        expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+      }),
+    );
   }
 
   /**
@@ -85,8 +110,10 @@ export class StorageService implements OnModuleInit {
       Key: key,
       ResponseContentDisposition: `attachment; filename="${filename.replace(/["\r\n]/g, '')}"`,
     });
-    return getSignedUrl(this.s3, command, {
-      expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
-    });
+    return this.toPublicUrl(
+      await getSignedUrl(this.s3, command, {
+        expiresIn: PRESIGNED_URL_EXPIRY_SECONDS,
+      }),
+    );
   }
 }

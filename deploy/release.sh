@@ -75,6 +75,13 @@ both_passwords="$db_password$url_password"
 # is a no-op, so it happens before the maintenance switch: the rehearsal below needs the database.
 compose up -d --wait postgres minio
 
+# Storage must work from the API's network with the API's own S3 settings, and a fresh MinIO
+# volume has no bucket yet. Checked here, while the site is still up: the API only logs a failed
+# bucket check at startup, so a wrong endpoint or key used to show up as broken uploads instead.
+docker run --rm --network quiz-platform_default --env-file "$release_root/.env" "$QUIZ_OPERATIONS_IMAGE" \
+    node scripts/ensure-storage-bucket.mjs \
+  || { echo 'Storage is not usable with the S3_* settings in .env (error above). Nothing was changed; the site is still up.' >&2; exit 1; }
+
 # Rehearse the migration on a throwaway copy of the live database while the site is still up.
 # CI only ever migrates an empty database, and two failures only this host can produce were
 # otherwise discovered by the real migration, with the site already dark:
@@ -117,6 +124,8 @@ done
 install -m 644 "$release_dir/deploy/logging.conf" /etc/nginx/conf.d/quiz-logging.conf
 install -m 644 "$release_dir/deploy/security-headers.conf" /etc/nginx/snippets/quiz-security-headers.conf
 install -m 644 "$release_dir/deploy/nginx-quiz-platform.conf" /etc/nginx/sites-available/quiz-platform
+# A fresh host, or one whose old site files were removed, has no enabled site yet.
+ln -sfn /etc/nginx/sites-available/quiz-platform /etc/nginx/sites-enabled/quiz-platform
 nginx -t
 systemctl reload nginx
 
@@ -160,3 +169,35 @@ mv -Tf "$release_root/current.next" "$release_root/current"
 printf '%s\n' "$release_id" > "$release_root/active-release"
 rm -f /var/www/quiz-platform/maintenance
 echo 'Matching API and SPA release activated. Complete the runbook smoke checks.'
+
+# Housekeeping for a release that is already live, so a failure here is reported but never fails
+# the deploy. Each release leaves an unpacked archive, a copy of the SPA and multi-GB images;
+# kept forever they fill the droplet's disk. The most recently activated releases stay complete
+# for rollback.sh (directory, SPA and API image). Only the active release keeps its operations
+# image, which is what migrations and `auth:bootstrap` run from.
+keep_releases=3
+printf '%s\n' "$release_id" >> "$release_root/release-history"
+prune_old_releases() {
+  local keep id
+  keep=$(tac "$release_root/release-history" | awk 'NF && !seen[$0]++' | head -n "$keep_releases")
+  for id in $({ find "$release_root/releases" /var/www/quiz-platform/releases "$release_root/nginx-backup" \
+                  -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null
+                find "$release_root" -maxdepth 1 -name 'release-*.tar.gz' -printf '%f\n' | sed 's/^release-//; s/\.tar\.gz$//'
+                docker image ls --format '{{.Tag}}' quiz-api
+                docker image ls --format '{{.Tag}}' quiz-operations
+              } | grep -E '^[a-f0-9]{40}$' | sort -u); do
+    [[ "$id" == "$release_id" ]] || docker image rm "quiz-operations:$id" >/dev/null 2>&1 || true
+    grep -qx "$id" <<<"$keep" && continue
+    rm -rf "$release_root/releases/$id" "/var/www/quiz-platform/releases/$id" \
+      "$release_root/nginx-backup/$id" "$release_root/release-$id.tar.gz"
+    docker image rm "quiz-api:$id" >/dev/null 2>&1 || true
+  done
+  find /var/www/quiz-platform/releases -mindepth 1 -maxdepth 1 -name '*.staging' -exec rm -rf {} +
+  docker image prune -f >/dev/null
+  # Almost all build cache sits after `COPY . .`, which no later release can reuse; dropping it
+  # costs the next build only the short toolchain setup before that line.
+  docker builder prune -af >/dev/null
+  echo "Releases kept for rollback: $(tr '\n' ' ' <<<"$keep")"
+  df -h / | awk 'NR == 2 {print "Disk: " $4 " free of " $2}'
+}
+prune_old_releases || echo 'Warning: cleaning up old releases failed; check free disk space on the host.' >&2

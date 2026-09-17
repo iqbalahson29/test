@@ -10,8 +10,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
     # Compose only guarantees start order, not readiness. Without this the release script
     # could reach `prisma migrate deploy` before a cold PostgreSQL was accepting connections.
+    # Checked over TCP, which is how the API and migrations connect: while a new volume is being
+    # initialized, a temporary server answers on the Unix socket only and is then restarted.
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d quiz_platform']
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres -d quiz_platform']
       interval: 5s
       timeout: 3s
       retries: 30
